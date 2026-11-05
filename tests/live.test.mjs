@@ -1,0 +1,231 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { mkdtemp, writeFile, rm, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { createApp } from '../backend/app.mjs';
+import { createLiveManager } from '../backend/live.mjs';
+import * as liveHelpers from '../backend/live.mjs';
+
+const accounts = { admin: ['admin@ekosmotr.local', 'Pilot-Admin-2026!'],
+  regional: ['regional@ekosmotr.local', 'Pilot-Region-2026!'] };
+const stations = Array.from({ length: 12 }, (_, i) => ({ id: `station-${i + 1}`,
+  city: ['Екатеринбург', 'Новосибирск', 'Краснодар', 'Москва'][i % 4],
+  region: 'Тест', address: `Улица Проверки, ${i + 1}`, manager: 'Тест' }));
+
+async function fixture(options = {}) {
+  const dir = await mkdtemp(path.join(tmpdir(), 'camera-pilot-live-'));
+  const stationFile = path.join(dir, 'stations.json'), marker = path.join(dir, 'stopped.txt');
+  const program = path.join(dir, 'bridge.mjs'), liveConfigFile = path.join(dir, 'live.json');
+  await writeFile(stationFile, JSON.stringify(stations));
+  // A subprocess fixture exercises actual stdout, disconnect and STOP cleanup. Never a real camera.
+  await writeFile(program, `import {writeFileSync} from 'node:fs';
+const marker=process.argv[2];let done=false;
+const stop=()=>{if(done)return;done=true;setTimeout(()=>{writeFileSync(marker,'stopped');process.exit(0)},${options.cleanupDelayMs || 0})};
+process.stdin.on('data',b=>{if(b.toString().includes('STOP'))stop()});
+process.on('SIGTERM',stop);
+${options.empty ? '' : "setInterval(()=>process.stdout.write(Buffer.from('synthetic-fmp4-bytes')),30);"}
+setInterval(()=>{},1000);
+`);
+  const config = { cameraId: 'probe-c300', command: process.execPath, args: [program, marker], cwd: dir,
+    maxDurationSeconds: options.duration || 10, startupTimeoutMs: options.empty ? 100 : 1000,
+    stallTimeoutMs: 1000 };
+  if (options.config !== false) await writeFile(liveConfigFile, JSON.stringify({ ...config, ...options.config }));
+  const app = createApp({ dbPath: path.join(dir, 'pilot.sqlite'), stationFile,
+    liveConfigFile: options.config === false ? undefined : liveConfigFile });
+  const server = createServer(app);
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const raw = (url, session, options = {}) => fetch(base + url, { ...options,
+    headers: { ...(session && { Cookie: session.cookie, 'X-CSRF-Token': session.csrfToken }),
+      ...(options.body && { 'Content-Type': 'application/json' }), ...options.headers },
+    body: options.body === undefined ? undefined : JSON.stringify(options.body) });
+  const request = async (...args) => { const r = await raw(...args); return { status: r.status, headers: r.headers, body: await r.json() }; };
+  const login = async (role = 'admin') => {
+    const [email, password] = accounts[role];
+    const result = await request('/api/login', null, { method: 'POST', body: { email, password } });
+    assert.equal(result.status, 200);
+    return { ...result.body, cookie: result.headers.get('set-cookie').split(';')[0] };
+  };
+  const start = session => request('/api/cameras/probe-c300/live', session, { method: 'POST' });
+  const stopped = async () => { for (let i = 0; i < 60; i++) { try { return await readFile(marker, 'utf8'); } catch {} await delay(30); } return null; };
+  return { app, server, request, raw, login, start, stopped, liveConfigFile, async close() {
+    await app.close(); server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    await delay(50);
+    assert.equal(path.dirname(path.resolve(dir)), path.resolve(tmpdir()));
+    assert.match(path.basename(dir), /^camera-pilot-live-/);
+    await rm(dir, { recursive: true, force: true });
+  } };
+}
+async function using(options, fn) { const f = await fixture(options); try { await fn(f); } finally { await f.close(); } }
+
+test('live requires login, CSRF and camera rights; missing and forbidden are identical', async () => using({}, async f => {
+  assert.equal((await f.start()).status, 401);
+  const admin = await f.login(), regional = await f.login('regional');
+  const noCSRF = await f.request('/api/cameras/probe-c300/live', admin, { method: 'POST', headers: { 'X-CSRF-Token': '' } });
+  assert.equal(noCSRF.status, 403);
+  const forbidden = await f.start(regional);
+  assert.equal(forbidden.status, 403);
+  assert.deepEqual((await f.request('/api/cameras/unknown/live', regional, { method: 'POST' })).body, forbidden.body);
+  assert.equal((await f.request('/api/cameras/probe-c300/live', admin, { method: 'POST', headers: { Origin: 'https://foreign.invalid' } })).status, 403);
+}));
+
+test('only configured camera advertises live and disabled configuration stays unavailable', async () => {
+  await using({}, async f => {
+    const admin = await f.login();
+    const configured = (await f.request('/api/cameras/probe-c300/playback', admin)).body;
+    assert.equal(configured.live.status, 'available');
+    assert.equal(configured.live.url, '/api/cameras/probe-c300/live');
+    const cameras = (await f.request('/api/cameras', admin)).body.cameras;
+    assert.equal(cameras.find(camera => camera.id === 'probe-c300').liveAvailable, true);
+    assert.ok(cameras.filter(camera => camera.id !== 'probe-c300').every(camera => camera.liveAvailable === false));
+    assert.equal(cameras.find(camera => camera.id === 'probe-c300').status, 'recorded_probe');
+    assert.equal((await f.request('/api/cameras/demo-1/playback', admin)).body.live.status, 'not_connected');
+    assert.equal((await f.request('/api/cameras/demo-1/live', admin, { method: 'POST' })).status, 503);
+    assert.ok(!JSON.stringify(configured).includes(process.execPath));
+  });
+  await using({ config: false }, async f => {
+    const admin = await f.login(); assert.equal((await f.start(admin)).status, 503);
+  });
+});
+
+test('live ticket is bounded, single-use and bound to exact login session', async () => using({}, async f => {
+  const admin = await f.login(), otherLogin = await f.login();
+  const started = await f.start(admin);
+  assert.equal(started.status, 201);
+  assert.ok(started.body.sessionId && started.body.streamUrl && started.body.stopUrl);
+  assert.equal(started.body.maxDurationSeconds, 10);
+  assert.equal((await f.start(admin)).status, 409);
+  const stolen = await f.request(started.body.streamUrl, otherLogin);
+  assert.equal(stolen.status, 403);
+  assert.deepEqual((await f.request(started.body.streamUrl.replace(started.body.sessionId, 'absent'), otherLogin)).body, stolen.body);
+  const response = await f.raw(started.body.streamUrl, admin);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'video/mp4');
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  const reader = response.body.getReader(); assert.ok((await reader.read()).value.length);
+  assert.equal((await f.request(started.body.streamUrl, admin)).status, 409);
+  assert.equal((await f.request(started.body.stopUrl, otherLogin, { method: 'DELETE' })).status, 403);
+  assert.equal((await f.request(started.body.stopUrl, admin, { method: 'DELETE' })).status, 200);
+  await reader.cancel(); assert.equal(await f.stopped(), 'stopped');
+}));
+
+test('closing video connection stops the bridge and releases the single camera slot', async () => using({}, async f => {
+  const admin = await f.login(), ticket = (await f.start(admin)).body;
+  const response = await f.raw(ticket.streamUrl, admin), reader = response.body.getReader();
+  await reader.read(); await reader.cancel();
+  assert.equal(await f.stopped(), 'stopped');
+  for (let i = 0; i < 20; i++) { const next = await f.start(admin); if (next.status === 201) return; await delay(20); }
+  assert.fail('bridge slot was not released');
+}));
+
+test('DELETE stop waits for bridge cleanup before allowing an immediate new start', async () => using({ cleanupDelayMs: 200 }, async f => {
+  const admin = await f.login(), ticket = (await f.start(admin)).body;
+  const response = await f.raw(ticket.streamUrl, admin), reader = response.body.getReader(); await reader.read();
+  const started = Date.now(), stopped = await f.request(ticket.stopUrl, admin, { method: 'DELETE' });
+  assert.equal(stopped.status, 200);
+  assert.equal(await readFile(path.join(path.dirname(f.liveConfigFile), 'stopped.txt'), 'utf8'), 'stopped');
+  assert.ok(Date.now() - started >= 180);
+  assert.equal((await f.start(admin)).status, 201);
+  await reader.cancel();
+}));
+
+test('logout ends an in-flight video and invalidates its ticket', async () => using({}, async f => {
+  const admin = await f.login(), ticket = (await f.start(admin)).body;
+  const response = await f.raw(ticket.streamUrl, admin), reader = response.body.getReader(); await reader.read();
+  assert.equal((await f.request('/api/logout', admin, { method: 'POST' })).status, 200);
+  assert.equal(await f.stopped(), 'stopped'); await reader.cancel();
+  assert.equal((await f.request(ticket.streamUrl, admin)).status, 401);
+}));
+
+test('bridge without output fails safely and terminates on startup timeout', async () => using({ empty: true }, async f => {
+  const admin = await f.login(), ticket = (await f.start(admin)).body;
+  const result = await f.request(ticket.streamUrl, admin);
+  assert.equal(result.status, 504);
+  assert.equal(result.body.code, 'LIVE_START_TIMEOUT');
+  assert.ok(!JSON.stringify(result.body).includes('bridge.mjs'));
+  assert.equal(await f.stopped(), 'stopped');
+  const audit = (await f.request('/api/audit', admin)).body.events;
+  const stop = audit.find(event => event.action === 'Остановлен онлайн-просмотр');
+  assert.deepEqual(JSON.parse(stop.details), { reason: 'startup_timeout' });
+  assert.ok(audit.some(event => event.action === 'Запрошен онлайн-просмотр'));
+}));
+
+test('maximum live duration terminates actual subprocess and stream', async () => using({ duration: 1 }, async f => {
+  const admin = await f.login(), ticket = (await f.start(admin)).body;
+  const response = await f.raw(ticket.streamUrl, admin), reader = response.body.getReader(); await reader.read();
+  await delay(1100); assert.equal(await f.stopped(), 'stopped'); await reader.cancel();
+}));
+
+test('server close ends the bridge and live audit never includes command or stream token', async () => using({}, async f => {
+  const admin = await f.login(), ticket = (await f.start(admin)).body;
+  const response = await f.raw(ticket.streamUrl, admin), reader = response.body.getReader(); await reader.read();
+  const audit = await f.request('/api/audit', admin), text = JSON.stringify(audit.body);
+  assert.ok(!text.includes(process.execPath)); assert.ok(!text.includes(ticket.sessionId));
+  f.app.close(); assert.equal(await f.stopped(), 'stopped'); await reader.cancel();
+}));
+
+test('revoking a regional camera scope stops an already playing stream', async () => using({ config: { cameraId: 'demo-1' } }, async f => {
+  const admin = await f.login(), regional = await f.login('regional');
+  const ticket = await f.request('/api/cameras/demo-1/live', regional, { method: 'POST' });
+  assert.equal(ticket.status, 201);
+  const response = await f.raw(ticket.body.streamUrl, regional), reader = response.body.getReader(); await reader.read();
+  const changed = await f.request(`/api/users/${regional.user.id}`, admin, { method: 'PATCH', body: { stationIds: [], cameraIds: [] } });
+  assert.equal(changed.status, 200);
+  assert.equal(await f.stopped(), 'stopped'); await reader.cancel();
+  assert.equal((await f.request(ticket.body.streamUrl, regional)).status, 403);
+}));
+
+test('unused ticket expires without starting any subprocess and frees its slot', async () => using({}, async f => {
+  const manager = createLiveManager({ configFile: f.liveConfigFile, cameraIds: ['probe-c300'], ticketTtlMs: 50 });
+  try {
+    const first = manager.create('probe-c300', 'owner', 'login');
+    await delay(80);
+    const next = manager.create('probe-c300', 'owner', 'login');
+    assert.notEqual(next.sessionId, first.sessionId);
+  } finally { manager.close(); }
+}));
+
+test('invalid local live config fails closed without exposing command values', async () => using({ config: { command: 'relative-program', args: ['PRIVATE_SECRET'] } }, async f => {
+  const admin = await f.login();
+  const response = await f.start(admin);
+  assert.equal(response.status, 503);
+  assert.ok(!JSON.stringify(response.body).includes('PRIVATE_SECRET'));
+  assert.equal((await f.request('/api/cameras/probe-c300/playback', admin)).body.live.status, 'not_connected');
+}));
+
+test('live startup configuration accepts 110 seconds and caps excessive values at that default', async () => {
+  assert.equal(typeof liveHelpers.loadLiveConfiguration, 'function');
+  for (const input of [110000, 110001]) await using({ config: { startupTimeoutMs: input } }, async f => {
+    const config = liveHelpers.loadLiveConfiguration(f.liveConfigFile, new Set(['probe-c300']));
+    assert.equal(config.startupTimeoutMs, 110000);
+    assert.equal(config.maxDurationSeconds, 10, 'startup budget does not extend the viewing session');
+  });
+});
+
+test('graceful server shutdown closes active HTTP video and waits for bridge cleanup before returning', async () => using({ cleanupDelayMs: 200 }, async f => {
+  assert.equal(typeof liveHelpers.closePilotServer, 'function');
+  const admin = await f.login(), ticket = (await f.start(admin)).body;
+  const response = await f.raw(ticket.streamUrl, admin), reader = response.body.getReader(); await reader.read();
+  const started = Date.now();
+  await liveHelpers.closePilotServer(f.app, f.server);
+  assert.equal(f.server.listening, false);
+  assert.equal(await readFile(path.join(path.dirname(f.liveConfigFile), 'stopped.txt'), 'utf8'), 'stopped');
+  assert.ok(Date.now() - started >= 180, 'shutdown must await actual subprocess STOP cleanup');
+  assert.ok(Date.now() - started < 2000, 'active stream must not hold shutdown until its ten-second lifetime');
+  await reader.cancel();
+}));
+
+test('STOP grace permits a slow bridge to finish descendant cleanup beyond two seconds', async () => using({ cleanupDelayMs: 2400 }, async f => {
+  const admin = await f.login(), ticket = (await f.start(admin)).body;
+  const response = await f.raw(ticket.streamUrl, admin), reader = response.body.getReader(); await reader.read();
+  const started = Date.now();
+  await liveHelpers.closePilotServer(f.app, f.server);
+  assert.equal(await readFile(path.join(path.dirname(f.liveConfigFile), 'stopped.txt'), 'utf8'), 'stopped');
+  assert.ok(Date.now() - started >= 2300, 'bridge must survive the old two-second cutoff');
+  assert.ok(Date.now() - started < 5000, 'bridge cleanup should finish before the new forced cutoff');
+  await reader.cancel();
+}));

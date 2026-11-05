@@ -1,0 +1,20 @@
+# Deny by default: no private files, local runtime, videos, logs or node_modules
+# are sent to the Docker daemon, including during the frontend build.
+**
+!Dockerfile
+!backend/
+!backend/*.mjs
+!data/
+!data/stations.json
+!frontend/
+!frontend/package.json
+!frontend/pnpm-lock.yaml
+!frontend/pnpm-workspace.yaml
+!frontend/index.html
+!frontend/vite.config.js
+!frontend/src/
+!frontend/src/**
+!deploy/
+!deploy/healthcheck.mjs
+!deploy/database-backup.mjs
+!deploy/database-restore.mjs

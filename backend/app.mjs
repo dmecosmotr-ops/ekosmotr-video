@@ -1,0 +1,420 @@
+import { readFileSync, existsSync, statSync, createReadStream } from 'node:fs';
+import { resolve, dirname, extname, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
+import { openStore, publicUser } from './store.mjs';
+import { normalizeDeploymentConfig } from './config.mjs';
+import { makeDemo, DEMO_DATE, aggregateMetrics, noneMetrics, buildVisits } from './demo.mjs';
+import { hasProbeMedia, validDate, timeSeconds, playbackState, archiveSearch } from './playback.mjs';
+import { importInventory } from './inventory.mjs';
+import { createLiveManager, LiveError } from './live.mjs';
+import { randomToken, tokenHash, hashPassword, verifyPassword, equalTokens,
+  SESSION_SECONDS, cookieToken, sessionCookie, validOrigin } from './security.mjs';
+
+const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+class HTTPError extends Error {
+  constructor(status, message, code) { super(message); this.status = status; this.code = code; }
+}
+const fail = (status, message, code) => { throw new HTTPError(status, message, code); };
+const requireCondition = (value, status, message, code) => { if (!value) fail(status, message, code); };
+const modes = { demoDate: DEMO_DATE, mode: 'pilot' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg',
+  '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.json': 'application/json; charset=utf-8' };
+
+function respond(response, status, body, headers = {}) {
+  if (response.writableEnded) return;
+  const buffer = Buffer.from(JSON.stringify(body));
+  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': buffer.length, 'Cache-Control': 'no-store', ...headers });
+  response.end(buffer);
+}
+
+async function bodyJSON(request) {
+  requireCondition(String(request.headers['content-type'] || '').split(';')[0] === 'application/json',
+    415, 'Отправьте данные в формате JSON', 'JSON_REQUIRED');
+  requireCondition(Number(request.headers['content-length'] || 0) <= 65536,
+    413, 'Слишком большой запрос', 'BODY_TOO_LARGE');
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > 65536) fail(413, 'Слишком большой запрос', 'BODY_TOO_LARGE');
+    chunks.push(chunk);
+  }
+  try {
+    const result = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error();
+    return result;
+  } catch { fail(400, 'Не удалось прочитать данные запроса', 'INVALID_JSON'); }
+}
+
+export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
+  stationFile = resolve(appRoot, 'data/stations.json'), mediaFile, inventoryFile, liveConfigFile,
+  staticDir = resolve(appRoot, 'frontend/dist'), deploymentConfig } = {}) {
+  deploymentConfig = normalizeDeploymentConfig(deploymentConfig);
+  const source = JSON.parse(readFileSync(stationFile, 'utf8'));
+  const stations = Array.isArray(source) ? source : source.stations;
+  if (!Array.isArray(stations) || !stations.length || new Set(stations.map(s => s.id)).size !== stations.length)
+    throw new Error('Station source is missing or invalid');
+  const stationMap = new Map(stations.map(s => [s.id, s]));
+  const { cameras, events } = makeDemo(stations);
+  cameras.push(...importInventory(inventoryFile, stations, cameras.map(camera => camera.id)));
+  const cameraMap = new Map(cameras.map(c => [c.id, c]));
+  const { db, audit, insert } = openStore(dbPath, stations, cameras.filter(c => c.status === 'demo').map(c => c.stationId), deploymentConfig);
+  const getUserRow = id => db.prepare('SELECT * FROM users WHERE id=?').get(id);
+  const dummyPassword = hashPassword(randomToken());
+  const loginAttempts = new Map();
+  // One bounded in-memory budget for peer IPs and failed IP/email pairs.
+  // A reverse proxy's users share its 120/min peer-IP budget; XFF is untrusted.
+  function loginBucket(key, limit, now) {
+    for (const [storedKey, value] of loginAttempts) {
+      if (value.until <= now) loginAttempts.delete(storedKey);
+    }
+    let bucket = loginAttempts.get(key);
+    requireCondition(!bucket || bucket.count < limit,
+      429, 'Слишком много попыток. Повторите вход через минуту', 'LOGIN_RATE_LIMIT');
+    if (!bucket) {
+      requireCondition(loginAttempts.size < 1000,
+        429, 'Слишком много попыток. Повторите вход через минуту', 'LOGIN_RATE_LIMIT');
+      bucket = { count: 0, until: now + 60000 };
+      loginAttempts.set(key, bucket);
+    }
+    return bucket;
+  }
+  let closed = false, closePromise = null;
+  const live = createLiveManager({ configFile: liveConfigFile, cameraIds: cameraMap.keys(),
+    onEvent: (action, ownerId, cameraId, reason) => {
+      const row = getUserRow(ownerId);
+      audit(row && publicUser(row), action === 'start' ? 'Запрошен онлайн-просмотр' : 'Остановлен онлайн-просмотр',
+        cameraMap.get(cameraId)?.name || 'Камера', action === 'stop' ? JSON.stringify({ reason }) : '');
+    } });
+
+  const canCamera = (user, camera) => Boolean(camera && (user.role === 'admin'
+    || (camera.stationId !== null && (user.stationIds.includes(camera.stationId) || user.cameraIds.includes(camera.id)))));
+  const visibleCameras = user => cameras.filter(c => canCamera(user, c));
+  const visibleStations = user => user.role === 'admin' ? stations : stations.filter(s =>
+    user.stationIds.includes(s.id) || visibleCameras(user).some(c => c.stationId === s.id));
+  const grantWithin = (actor, target) => target.stationIds.every(id => actor.stationIds.includes(id))
+    && target.cameraIds.every(id => canCamera(actor, cameraMap.get(id)));
+  const canManage = (actor, row) => actor.role === 'admin' || (actor.role === 'director'
+    && row.role === 'regional' && row.created_by === actor.id && row.delegated_by === actor.id);
+  const state = session => ({ user: session?.user || null, csrfToken: session?.csrf || null, ...modes,
+    demoLoginAvailable: deploymentConfig.demoLoginAvailable });
+
+  function effectiveUser(row) {
+    const user = publicUser(row);
+    if (!user || user.role !== 'regional' || !row.delegated_by) return user;
+    const parentRow = getUserRow(row.delegated_by);
+    if (!parentRow?.active || parentRow.role !== 'director') return { ...user, stationIds: [], cameraIds: [] };
+    const parent = publicUser(parentRow);
+    const stationIds = user.stationIds.filter(id => parent.stationIds.includes(id));
+    const cameraIds = cameras.filter(camera => canCamera(user, camera) && canCamera(parent, camera)
+      && !stationIds.includes(camera.stationId)).map(camera => camera.id);
+    return { ...user, stationIds, cameraIds };
+  }
+
+  function currentSession(request) {
+    const token = cookieToken(request);
+    if (!token || !/^[A-Za-z0-9_-]{30,100}$/.test(token)) return null;
+    const hash = tokenHash(token);
+    const row = db.prepare('SELECT * FROM sessions WHERE token_hash=?').get(hash);
+    if (!row) return null;
+    const userRow = getUserRow(row.user_id);
+    if (row.expires <= Date.now() || !userRow?.active) {
+      db.prepare('DELETE FROM sessions WHERE token_hash=?').run(hash);
+      return null;
+    }
+    return { user: effectiveUser(userRow), csrf: row.csrf, hash };
+  }
+
+  function checkDate(url) {
+    const date = url.searchParams.get('date') || DEMO_DATE;
+    requireCondition(validDate(date), 400, 'Укажите корректную дату', 'INVALID_DATE');
+    return date;
+  }
+
+  function validateUserInput(body, actor, existing) {
+    const base = existing ? effectiveUser(existing) : {};
+    const name = body.name ?? base.name;
+    const emailValue = body.email ?? base.email;
+    const email = typeof emailValue === 'string' ? emailValue.trim().toLowerCase() : emailValue;
+    const role = body.role ?? base.role;
+    const active = body.active ?? base.active ?? true;
+    const stationIds = body.stationIds ?? base.stationIds ?? [];
+    const cameraIds = body.cameraIds ?? base.cameraIds ?? [];
+    requireCondition(typeof name === 'string' && name.trim().length >= 2 && name.length <= 120
+      && !/[\x00-\x1f]/.test(name), 400, 'Укажите имя от 2 до 120 символов', 'INVALID_NAME');
+    requireCondition(typeof email === 'string' && email.length <= 254
+      && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email), 400, 'Укажите корректный email', 'INVALID_EMAIL');
+    requireCondition(['admin', 'director', 'regional'].includes(role), 400, 'Выберите роль пользователя', 'INVALID_ROLE');
+    requireCondition(typeof active === 'boolean', 400, 'Некорректное состояние пользователя', 'INVALID_ACTIVE');
+    requireCondition(Array.isArray(stationIds) && stationIds.length <= 1000
+      && stationIds.every(id => typeof id === 'string' && stationMap.has(id)),
+      400, 'В доступах указана неизвестная станция', 'INVALID_STATIONS');
+    requireCondition(Array.isArray(cameraIds) && cameraIds.length <= 1000
+      && cameraIds.every(id => typeof id === 'string' && cameraMap.has(id)),
+      400, 'В доступах указана неизвестная камера', 'INVALID_CAMERAS');
+    requireCondition(role === 'admin' || cameraIds.every(id => cameraMap.get(id).stationId !== null),
+      403, 'Непривязанные камеры доступны только администратору', 'UNMAPPED_ADMIN_ONLY');
+    if (actor.role === 'director') {
+      requireCondition(role === 'regional', 403, 'Директор может создавать только региональные доступы', 'ROLE_ESCALATION');
+      requireCondition(grantWithin(actor, { stationIds, cameraIds }),
+        403, 'Нельзя выдать доступ за пределами ваших станций и камер', 'SCOPE_ESCALATION');
+    }
+    if (body.password !== undefined || !existing) {
+      requireCondition(typeof body.password === 'string' && body.password.length >= 10 && body.password.length <= 200,
+        400, 'Пароль должен содержать от 10 до 200 символов', 'INVALID_PASSWORD');
+    }
+    return { name: name.trim(), email, role, active,
+      stationIds: [...new Set(stationIds)], cameraIds: [...new Set(cameraIds)] };
+  }
+
+  function serveMedia(request, response, user, id) {
+    const camera = cameraMap.get(id);
+    requireCondition(canCamera(user, camera), 403, 'Нет доступа к этой камере', 'CAMERA_FORBIDDEN');
+    requireCondition(id === 'probe-c300' && hasProbeMedia(mediaFile),
+      404, 'Запись проверки не подключена', 'MEDIA_UNAVAILABLE');
+    const info = statSync(mediaFile);
+    requireCondition(info.isFile(), 404, 'Запись недоступна', 'MEDIA_UNAVAILABLE');
+    let start = 0, end = info.size - 1, code = 200;
+    const range = request.headers.range;
+    if (range) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+      if (!match || (!match[1] && !match[2])) {
+        response.writeHead(416, { 'Content-Range': `bytes */${info.size}` }); response.end(); return;
+      }
+      if (!match[1]) { start = Math.max(0, info.size - Number(match[2])); }
+      else { start = Number(match[1]); if (match[2]) end = Number(match[2]); }
+      end = Math.min(end, info.size - 1);
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= info.size) {
+        response.writeHead(416, { 'Content-Range': `bytes */${info.size}` }); response.end(); return;
+      }
+      code = 206;
+    }
+    const headers = { 'Content-Type': 'video/mp4', 'Accept-Ranges': 'bytes',
+      'Content-Length': end - start + 1, 'Cache-Control': 'no-store' };
+    if (code === 206) headers['Content-Range'] = `bytes ${start}-${end}/${info.size}`;
+    response.writeHead(code, headers);
+    if (request.method === 'HEAD') { response.end(); return; }
+    const stream = createReadStream(mediaFile, { start, end });
+    stream.on('error', () => response.destroy());
+    response.on('close', () => stream.destroy());
+    stream.pipe(response);
+  }
+
+  function serveStatic(request, response, pathname) {
+    requireCondition(['GET', 'HEAD'].includes(request.method), 405, 'Метод не поддерживается', 'METHOD_NOT_ALLOWED');
+    const root = resolve(staticDir);
+    let file = resolve(root, `.${pathname}`);
+    requireCondition(file === root || file.startsWith(root + sep), 404, 'Страница не найдена', 'NOT_FOUND');
+    if (!existsSync(file) || !statSync(file).isFile()) {
+      requireCondition(!extname(pathname), 404, 'Файл не найден', 'NOT_FOUND');
+      file = resolve(root, 'index.html');
+    }
+    if (!existsSync(file)) return respond(response, 503, { error: 'Интерфейс ещё не собран', code: 'FRONTEND_NOT_BUILT' });
+    const info = statSync(file);
+    response.writeHead(200, { 'Content-Type': MIME[extname(file)] || 'application/octet-stream',
+      'Content-Length': info.size, 'Cache-Control': extname(file) === '.html' ? 'no-store' : 'public,max-age=3600' });
+    if (request.method === 'HEAD') { response.end(); return; }
+    const stream = createReadStream(file);
+    stream.on('error', () => response.destroy());
+    response.on('close', () => stream.destroy());
+    stream.pipe(response);
+  }
+
+  async function dispatch(request, response) {
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.setHeader('X-Frame-Options', 'DENY');
+    response.setHeader('Referrer-Policy', 'no-referrer');
+    response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+    requireCondition(!closed, 503, 'Сервис перезапускается', 'CLOSED');
+    requireCondition(validOrigin(request, deploymentConfig), 403, 'Источник запроса не разрешён', 'ORIGIN_FORBIDDEN');
+    const rawPath = String(request.url || '/').split('?')[0];
+    let decoded;
+    try { decoded = decodeURIComponent(rawPath); } catch { fail(400, 'Некорректный адрес', 'INVALID_PATH'); }
+    requireCondition(!decoded.includes('\\') && !decoded.includes('\0') && !decoded.split('/').includes('..'),
+      404, 'Страница не найдена', 'NOT_FOUND');
+    const url = new URL(request.url, `http://${request.headers.host}`);
+    const pathname = url.pathname;
+    if (!pathname.startsWith('/api/')) return serveStatic(request, response, decodeURIComponent(pathname));
+    response.setHeader('Cache-Control', 'no-store');
+    if (pathname === '/api/health' && request.method === 'GET') return respond(response, 200, { ok: true, mode: 'pilot' });
+    const session = currentSession(request);
+    if (pathname === '/api/session' && request.method === 'GET') return respond(response, 200, state(session));
+    if (pathname === '/api/login' && request.method === 'POST') {
+      const peerAddress = request.socket.remoteAddress || 'unknown';
+      loginBucket(`ip:${peerAddress}`, 120, Date.now()).count++;
+      const body = await bodyJSON(request);
+      requireCondition(typeof body.email === 'string' && typeof body.password === 'string'
+        && body.email.length <= 254 && body.password.length <= 200, 400, 'Укажите email и пароль', 'INVALID_LOGIN');
+      const email = body.email.trim().toLowerCase();
+      const key = `pair:${JSON.stringify([peerAddress, email])}`;
+      const now = Date.now();
+      const attempts = loginBucket(key, 10, now);
+      const row = db.prepare('SELECT * FROM users WHERE email=?').get(email);
+      const correct = verifyPassword(body.password, row?.password_salt || dummyPassword.salt,
+        row?.password_hash || dummyPassword.hash);
+      if (!row?.active || !correct) {
+        attempts.count++;
+        audit(null, 'Неудачный вход', 'Вход в сервис');
+        fail(401, 'Неверный email или пароль', 'INVALID_CREDENTIALS');
+      }
+      loginAttempts.delete(key);
+      if (session) db.prepare('DELETE FROM sessions WHERE token_hash=?').run(session.hash);
+      db.prepare('DELETE FROM sessions WHERE expires<=?').run(now);
+      const token = randomToken(), csrf = randomToken();
+      db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').run(tokenHash(token), row.id, csrf, now + SESSION_SECONDS * 1000);
+      const user = effectiveUser(row);
+      audit(user, 'Вход в сервис', user.name);
+      return respond(response, 200, state({ user, csrf }), { 'Set-Cookie': sessionCookie(token, false, deploymentConfig.secureCookies) });
+    }
+    requireCondition(session, 401, 'Войдите в сервис', 'AUTH_REQUIRED');
+    const user = session.user;
+    if (!['GET', 'HEAD'].includes(request.method)) {
+      requireCondition(equalTokens(request.headers['x-csrf-token'], session.csrf),
+        403, 'Обновите страницу и повторите действие', 'CSRF_REQUIRED');
+    }
+    if (pathname === '/api/logout' && request.method === 'POST') {
+      live.stopLogin(session.hash);
+      db.prepare('DELETE FROM sessions WHERE token_hash=?').run(session.hash);
+      audit(user, 'Выход из сервиса', user.name);
+      return respond(response, 200, { ok: true }, { 'Set-Cookie': sessionCookie('', true, deploymentConfig.secureCookies) });
+    }
+    if (pathname === '/api/stations' && request.method === 'GET') {
+      const date = checkDate(url), allowedCameras = visibleCameras(user);
+      return respond(response, 200, { stations: visibleStations(user).map(s => ({ ...s,
+        cameraCount: allowedCameras.filter(c => c.stationId === s.id).length,
+        metrics: aggregateMetrics(allowedCameras.filter(c => c.stationId === s.id), date) })),
+        demoDate: DEMO_DATE, demo: date === DEMO_DATE });
+    }
+    if (pathname === '/api/cameras' && request.method === 'GET') {
+      const date = checkDate(url), stationId = url.searchParams.get('stationId');
+      return respond(response, 200, { cameras: visibleCameras(user).filter(c => !stationId || c.stationId === stationId)
+        .map(c => {
+          const { candidateStationIds, ...safeCamera } = c;
+          return { ...safeCamera, ...(user.role === 'admin' && candidateStationIds ? { candidateStationIds } : {}),
+            liveAvailable: live.available(c.id),
+            archiveAvailable: c.id === 'probe-c300' && hasProbeMedia(mediaFile),
+            metrics: c.status === 'demo' && date === DEMO_DATE ? c.metrics : noneMetrics(c.metrics.note),
+            mediaUrl: c.id === 'probe-c300' && hasProbeMedia(mediaFile) ? '/api/cameras/probe-c300/media' : null };
+        }) });
+    }
+    if (['/api/events', '/api/visits'].includes(pathname) && request.method === 'GET') {
+      const date = checkDate(url), stationId = url.searchParams.get('stationId'), cameraId = url.searchParams.get('cameraId');
+      const scopedEvents = date === DEMO_DATE ? events.filter(e =>
+        canCamera(user, cameraMap.get(e.cameraId)) && (!stationId || e.stationId === stationId)
+        && (!cameraId || e.cameraId === cameraId)) : [];
+      return respond(response, 200, pathname === '/api/visits' ? { visits: buildVisits(scopedEvents) } : { events: scopedEvents });
+    }
+    const playbackMatch = /^\/api\/cameras\/([^/]+)\/playback$/.exec(pathname);
+    if (playbackMatch && request.method === 'GET') {
+      const camera = cameraMap.get(playbackMatch[1]);
+      requireCondition(canCamera(user, camera), 403, 'Нет доступа к этой камере', 'CAMERA_FORBIDDEN');
+      return respond(response, 200, playbackState(camera, hasProbeMedia(mediaFile), live.available(camera.id)));
+    }
+    const liveStart = /^\/api\/cameras\/([^/]+)\/live$/.exec(pathname);
+    if (liveStart && request.method === 'POST') {
+      const camera = cameraMap.get(liveStart[1]);
+      requireCondition(canCamera(user, camera), 403, 'Нет доступа к этой камере', 'CAMERA_FORBIDDEN');
+      return respond(response, 201, live.create(camera.id, user.id, session.hash));
+    }
+    const liveSession = /^\/api\/cameras\/([^/]+)\/live\/([^/]+)(\/stream)?$/.exec(pathname);
+    if (liveSession && (request.method === 'DELETE' && !liveSession[3] || request.method === 'GET' && liveSession[3])) {
+      const camera = cameraMap.get(liveSession[1]);
+      requireCondition(canCamera(user, camera), 403, 'Нет доступа к этой камере', 'CAMERA_FORBIDDEN');
+      if (request.method === 'DELETE') {
+        await live.stop(camera.id, liveSession[2], user.id, session.hash);
+        return respond(response, 200, { ok: true });
+      }
+      return live.stream(request, response, { cameraId: camera.id, sessionId: liveSession[2],
+        ownerId: user.id, loginHash: session.hash, isAuthorized: () => {
+          const now = currentSession(request);
+          return Boolean(now && now.hash === session.hash && now.user.id === user.id && canCamera(now.user, camera));
+        } });
+    }
+    if (pathname === '/api/archive' && request.method === 'GET') {
+      const cameraId = url.searchParams.get('cameraId');
+      requireCondition(cameraId, 400, 'Выберите камеру', 'CAMERA_REQUIRED');
+      const camera = cameraMap.get(cameraId);
+      requireCondition(canCamera(user, camera), 403, 'Нет доступа к этой камере', 'CAMERA_FORBIDDEN');
+      const interval = Object.fromEntries(['date', 'from', 'to'].map(key => [key, url.searchParams.get(key)]));
+      requireCondition(['date', 'from', 'to', 'cameraId'].every(key => url.searchParams.getAll(key).length === 1)
+        && validDate(interval.date), 400, 'Укажите корректную дату и интервал поиска', 'INVALID_ARCHIVE_INTERVAL');
+      const start = timeSeconds(interval.from), end = timeSeconds(interval.to);
+      requireCondition(start !== null && end !== null && start < end,
+        400, 'Укажите время в формате ЧЧ:ММ или ЧЧ:ММ:СС. Конец должен быть позже начала в тот же день.', 'INVALID_ARCHIVE_INTERVAL');
+      return respond(response, 200, archiveSearch(camera, interval, hasProbeMedia(mediaFile)));
+    }
+    const mediaMatch = /^\/api\/cameras\/([^/]+)\/media$/.exec(pathname);
+    if (mediaMatch && ['GET', 'HEAD'].includes(request.method)) return serveMedia(request, response, user, mediaMatch[1]);
+    if (pathname === '/api/users' && request.method === 'GET') {
+      requireCondition(user.role !== 'regional', 403, 'Нет прав управления пользователями', 'USERS_FORBIDDEN');
+      const rows = db.prepare('SELECT * FROM users ORDER BY created_at,name').all();
+      return respond(response, 200, { users: rows.filter(row => canManage(user, row)).map(effectiveUser) });
+    }
+    if (pathname === '/api/users' && request.method === 'POST') {
+      requireCondition(user.role !== 'regional', 403, 'Нет прав управления пользователями', 'USERS_FORBIDDEN');
+      const body = await bodyJSON(request), data = validateUserInput(body, user);
+      requireCondition(!db.prepare('SELECT id FROM users WHERE email=?').get(data.email),
+        409, 'Пользователь с таким email уже существует', 'EMAIL_EXISTS');
+      const id = randomUUID(), { salt, hash } = hashPassword(body.password);
+      insert.run(id, data.name, data.email, salt, hash, data.role,
+        JSON.stringify(data.stationIds), JSON.stringify(data.cameraIds), user.id, new Date().toISOString());
+      if (user.role === 'director') db.prepare('UPDATE users SET delegated_by=? WHERE id=?').run(user.id, id);
+      if (!data.active) db.prepare('UPDATE users SET active=0 WHERE id=?').run(id);
+      audit(user, 'Создан пользователь', data.name, JSON.stringify({ role: data.role,
+        stations: data.stationIds.length, cameras: data.cameraIds.length }));
+      return respond(response, 201, { user: effectiveUser(getUserRow(id)) });
+    }
+    const userMatch = /^\/api\/users\/([^/]+)$/.exec(pathname);
+    if (userMatch && request.method === 'PATCH') {
+      requireCondition(user.role !== 'regional', 403, 'Нет прав управления пользователями', 'USERS_FORBIDDEN');
+      const row = getUserRow(userMatch[1]);
+      requireCondition(row && canManage(user, row), 403, 'Нет прав изменения этого пользователя', 'USER_FORBIDDEN');
+      const body = await bodyJSON(request), data = validateUserInput(body, user, row);
+      const before = effectiveUser(row);
+      const sameSet = (left, right) => left.length === right.length
+        && [...left].sort().every((value, index) => value === [...right].sort()[index]);
+      const grantsChanged = data.role !== row.role || !sameSet(data.stationIds, before.stationIds)
+        || !sameSet(data.cameraIds, before.cameraIds);
+      const duplicate = db.prepare('SELECT id FROM users WHERE email=? AND id<>?').get(data.email, row.id);
+      requireCondition(!duplicate, 409, 'Пользователь с таким email уже существует', 'EMAIL_EXISTS');
+      if (row.role === 'admin' && row.active && (data.role !== 'admin' || !data.active)) {
+        requireCondition(db.prepare("SELECT COUNT(*) n FROM users WHERE role='admin' AND active=1").get().n > 1,
+          409, 'Нельзя отключить последнего администратора', 'LAST_ADMIN');
+      }
+      let salt = row.password_salt, hash = row.password_hash;
+      if (body.password !== undefined) ({ salt, hash } = hashPassword(body.password));
+      db.prepare(`UPDATE users SET name=?,email=?,role=?,active=?,station_ids=?,camera_ids=?,password_salt=?,password_hash=? WHERE id=?`)
+        .run(data.name, data.email, data.role, data.active ? 1 : 0,
+          grantsChanged ? JSON.stringify(data.stationIds) : row.station_ids,
+          grantsChanged ? JSON.stringify(data.cameraIds) : row.camera_ids, salt, hash, row.id);
+      if (user.role === 'admin' && grantsChanged)
+        db.prepare('UPDATE users SET delegated_by=NULL WHERE id=?').run(row.id);
+      if (!data.active || body.password !== undefined || row.role !== data.role)
+        db.prepare('DELETE FROM sessions WHERE user_id=?').run(row.id);
+      audit(user, grantsChanged ? 'Изменены права пользователя' : 'Изменён пользователь', data.name, JSON.stringify({ role: data.role, active: data.active,
+        stations: data.stationIds.length, cameras: data.cameraIds.length }));
+      return respond(response, 200, { user: effectiveUser(getUserRow(row.id)) });
+    }
+    if (pathname === '/api/audit' && request.method === 'GET') {
+      requireCondition(user.role !== 'regional', 403, 'Нет доступа к журналу управления', 'AUDIT_FORBIDDEN');
+      const rows = user.role === 'admin' ? db.prepare('SELECT * FROM audit ORDER BY at DESC LIMIT 300').all()
+        : db.prepare('SELECT * FROM audit WHERE actor_id=? ORDER BY at DESC LIMIT 300').all(user.id);
+      return respond(response, 200, { events: rows.map(({ actor_id, ...event }) => event) });
+    }
+    fail(404, 'Раздел не найден', 'NOT_FOUND');
+  }
+
+  const handler = (request, response) => dispatch(request, response).catch(error => {
+    if (response.headersSent) { response.destroy(); return; }
+    if (error instanceof HTTPError || error instanceof LiveError) respond(response, error.status, { error: error.message, code: error.code });
+    else respond(response, 500, { error: 'Не удалось выполнить действие. Повторите попытку', code: 'INTERNAL_ERROR' });
+  });
+  handler.close = () => {
+    if (!closed) { closed = true; closePromise = live.close(); db.close(); }
+    return closePromise;
+  };
+  return handler;
+}

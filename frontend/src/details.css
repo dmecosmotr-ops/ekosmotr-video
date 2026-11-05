@@ -1,0 +1,37 @@
+.detail-modal .modal-header > div { min-width: 0; }
+.detail-modal .modal-header h2 { font-size: 21px; line-height: 1.35; overflow-wrap: anywhere; }
+.detail-modal .modal-header p { color: #6e8792; line-height: 1.6; }
+.detail-modal .station-detail-body { padding-top: 0; }
+.detail-modal .detail-navigation { margin-top: 0; }
+.detail-modal .detail-navigation button { min-height: 45px; }
+.detail-modal .detail-summary { padding-top: 18px; }
+.detail-modal .detail-date { margin-top: 15px; }
+.detail-modal .detail-meta .muted { color: #637f8b; }
+.detail-modal .detail-metrics { margin-bottom: 14px; }
+.detail-modal .video-panel { padding-top: 16px; }
+.detail-modal .video-panel-toolbar { gap: 9px 15px; margin-bottom: 12px; }
+.detail-modal .video-camera-label { font-size: 12px; color: #526f7d; }
+.detail-modal .video-camera-select { flex: 1 1 320px; min-width: 0; max-width: 560px; }
+.detail-modal .video-camera-select select { width: 100%; min-width: 0; max-width: 100%; text-overflow: ellipsis; }
+.detail-modal .camera-row-actions .text-button:disabled { color: #8799a1; opacity: .65; cursor: default; }
+.detail-modal .camera-row-actions .badge { margin-top: 0; }
+
+@media (max-width: 760px) {
+  .detail-modal .modal-header h2 { font-size: 19px; }
+  .detail-modal .camera-row { align-items: flex-start; }
+  .detail-modal .camera-row-actions { gap: 10px; max-width: 145px; }
+}
+
+@media (max-width: 440px) {
+  .detail-modal .modal-header { padding: 17px 15px; gap: 10px; }
+  .detail-modal .modal-header h2 { font-size: 18px; }
+  .detail-modal .modal-header p { font-size: 11px; }
+  .detail-modal .detail-navigation { display: grid; grid-template-columns: 1.15fr 1fr 1fr; gap: 0; }
+  .detail-modal .detail-navigation button { padding: 10px 4px; gap: 5px; font-size: 11px; }
+  .detail-modal .video-camera-select { flex-basis: 100%; width: 100%; }
+  .detail-modal .video-camera-select select { font-size: 12px; }
+  .detail-modal .camera-row { flex-wrap: wrap; }
+  .detail-modal .camera-row > div:nth-child(2) { flex-basis: 100%; }
+  .detail-modal .camera-row-actions { max-width: none; width: 100%; justify-content: flex-start; }
+  .detail-modal .detail-meta { gap: 7px 12px; }
+}

@@ -1,0 +1,61 @@
+name: ekosmotr-camera-pilot
+
+services:
+  camera-pilot:
+    image: ${PILOT_IMAGE:-ekosmotr-camera-pilot:review}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    cpus: "${PILOT_CPUS:-1.0}"
+    mem_limit: ${PILOT_MEMORY_LIMIT:-512m}
+    memswap_limit: ${PILOT_MEMORY_LIMIT:-512m}
+    stop_grace_period: 30s
+    ulimits:
+      nofile:
+        soft: 1024
+        hard: 2048
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16777216,uid=1000,gid=1000,mode=1700
+    environment:
+      NODE_ENV: production
+      PILOT_DEPLOYMENT: server
+      PILOT_HOST: 0.0.0.0
+      PILOT_PORT: "3210"
+      PILOT_DB: /var/lib/camera-pilot/pilot.sqlite
+      PILOT_PUBLIC_ORIGIN: ${PILOT_PUBLIC_ORIGIN:?Set the external HTTPS origin in .env}
+      PILOT_ADMIN_EMAIL: ${PILOT_ADMIN_EMAIL:?Set the bootstrap admin email in .env}
+      PILOT_ADMIN_PASSWORD_FILE: /run/secrets/bootstrap_admin_password
+    ports:
+      - "127.0.0.1:${PILOT_PUBLISHED_PORT:-3210}:3210"
+    volumes:
+      - pilot-data:/var/lib/camera-pilot
+    secrets:
+      - bootstrap_admin_password
+    networks:
+      - cabinet
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+volumes:
+  pilot-data:
+
+secrets:
+  bootstrap_admin_password:
+    file: ${PILOT_ADMIN_PASSWORD_FILE_HOST:?Create a separate bootstrap password file}
+
+networks:
+  cabinet:
+    driver: bridge
+    internal: true

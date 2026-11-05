@@ -1,0 +1,43 @@
+.data-mode-control { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+.data-mode-control > p { color: var(--muted); font-size: 12px; flex: 1; min-width: 220px; }
+.data-mode-control .segmented { flex-shrink: 0; }
+.example-summary { border: 1px solid #eddfbe; background: var(--amber-soft); border-radius: 9px; padding: 14px 18px; display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; margin-bottom: 20px; font-size: 13px; }
+.example-summary > span { display: inline-flex; align-items: center; gap: 6px; }
+.workspace-station-table .station-main { max-width: 300px; white-space: normal; font-size: 13px; line-height: 1.5; }
+.workspace-station-table td:first-child { min-width: 245px; }
+.workspace-station-table .station-manager { white-space: normal; }
+.workspace-station-table .station-state { flex-wrap: wrap; max-width: 180px; }
+.workspace-station-table .station-state .muted { font-size: 11px; line-height: 1.45; }
+.station-mobile-list { display: none; }
+.camera-station-groups { display: grid; gap: 18px; }
+.camera-station-group { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.camera-station-heading { padding: 17px 19px; display: flex; justify-content: space-between; gap: 14px; background: #f8fafb; }
+.camera-station-heading h3 { font-size: 16px; line-height: 1.45; text-wrap: pretty; }
+.camera-station-heading p { font-size: 12px; color: var(--muted); margin-top: 5px; }
+.compact-camera-card { padding: 17px 19px; display: flex; align-items: flex-start; gap: 14px; border-top: 1px solid var(--border); }
+.compact-camera-symbol { background: var(--accent-soft); color: var(--accent); border-radius: 8px; padding: 11px; flex-shrink: 0; }
+.compact-camera-info { display: flex; flex: 1; min-width: 0; flex-direction: column; align-items: flex-start; gap: 5px; }
+.compact-camera-info > strong { font-size: 13px; overflow-wrap: anywhere; }
+.compact-camera-info > span:not(.badge), .compact-camera-info small { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.compact-camera-info > .badge { margin-top: 3px; }
+.compact-camera-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; max-width: 240px; justify-content: flex-end; }
+.compact-camera-actions .text-button { margin-left: 6px; }
+.workspace-label strong { max-width: 155px; overflow-wrap: anywhere; }
+@media (max-width: 900px) { .compact-camera-card { flex-wrap: wrap; } .compact-camera-actions { width: 100%; max-width: none; justify-content: flex-start; padding-left: 58px; } }
+@media (max-width: 640px) {
+  .workspace-station-table { display: none; }
+  .station-mobile-list { display: grid; gap: 12px; }
+  .station-mobile-card { text-align: left; display: grid; gap: 8px; padding: 16px; background: white; border: 1px solid var(--border); border-radius: 9px; color: var(--text); width: 100%; }
+  .station-mobile-card > strong { font-size: 14px; line-height: 1.5; }
+  .station-mobile-card > span { font-size: 12px; color: var(--muted); }
+  .station-mobile-card > div { display: grid; gap: 5px; font-size: 12px; }
+  .station-mobile-card .mobile-open { display: flex; align-items: center; color: var(--accent); font-weight: 600; margin-top: 3px; }
+  .camera-station-heading { padding: 14px; }
+  .camera-station-heading h3 { font-size: 15px; }
+  .compact-camera-card { padding: 14px; gap: 10px; }
+  .compact-camera-symbol { padding: 8px; }
+  .compact-camera-actions { padding-left: 0; }
+  .compact-camera-actions .button { min-height: 40px; }
+  .data-mode-control .segmented { width: 100%; }
+  .data-mode-control .segmented button { flex: 1; }
+}

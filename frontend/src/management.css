@@ -1,0 +1,64 @@
+.management-role-description { color: var(--muted); font-size: 12px; line-height: 1.6; font-weight: 400; }
+.management-access-search { width: 100%; height: 39px; }
+.management-access-tree { max-height: 350px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; overscroll-behavior: contain; }
+.management-access-group + .management-access-group { border-top: 1px solid var(--border); }
+.management-access-group > summary { padding: 13px 15px; cursor: pointer; background: #f4f8f9; color: #36535e; font-size: 13px; line-height: 1.6; }
+.management-access-group > summary span { margin-left: 10px; color: var(--muted); font-size: 12px; }
+.management-access-nodes { padding: 0 12px; }
+.management-station-node + .management-station-node { border-top: 1px solid var(--border); }
+.management-station-node > summary { padding: 13px 4px; cursor: pointer; color: #244653; font-weight: 550; line-height: 1.6; font-size: 13px; }
+.management-station-node > summary small { display: block; margin-left: 17px; color: var(--muted); font-size: 11px; font-weight: 400; }
+.management-access-choice { display: flex; align-items: center; gap: 11px; padding: 11px 12px; cursor: pointer; border-radius: 6px; }
+.management-access-choice:hover { background: #f6f9fa; }
+.management-access-choice > span { min-width: 0; flex: 1; }
+.management-access-choice strong, .management-access-choice small { display: block; line-height: 1.6; overflow-wrap: anywhere; }
+.management-access-choice strong { font-size: 12px; color: #3d5c67; font-weight: 500; }
+.management-access-choice small { font-size: 11px; color: var(--muted); }
+.management-access-choice > svg { color: var(--accent); flex: 0 0 16px; }
+.management-whole-station { background: #f0f7f8; }
+.management-access-choice.is-selected { background: var(--accent-soft); }
+.management-access-choice.is-inherited { cursor: default; }
+.management-camera-choices { padding: 4px 0 9px 20px; }
+.management-no-cameras { padding: 10px 12px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.management-access-preview { margin: 22px 25px 0; border: 1px solid #cde3e5; border-radius: 8px; background: #f5fafb; padding: 16px; max-height: 250px; overflow-y: auto; color: #45616c; font-size: 12px; line-height: 1.7; }
+.management-access-preview h3 { color: #244a56; font-size: 14px; font-weight: 600; }
+.management-preview-count { margin-top: 6px; }
+.management-address-list { padding-left: 18px; margin: 10px 0 0; }
+.management-address-list li + li { margin-top: 8px; }
+.management-address-list strong, .management-address-list span { display: block; }
+.management-address-list strong { font-weight: 550; color: #365664; }
+.management-address-list span { color: var(--muted); font-size: 11px; }
+.management-unavailable { color: #7b6535; margin-top: 10px; font-size: 11px; line-height: 1.7; }
+.management-all-access { margin-top: 8px; }
+.management-user-access { min-width: 230px; max-width: 360px; font-size: 11px; line-height: 1.7; }
+.management-user-access > summary { cursor: pointer; color: #3b626e; }
+.management-disclosure-label { display: block; padding-left: 14px; color: var(--accent); }
+.management-user-access-content { padding: 3px 0 10px; }
+.management-user-access-content .management-address-list { padding-left: 15px; }
+.management-users .users-table td { vertical-align: top; }
+.management-audit-heading > p { color: var(--muted); font-size: 13px; line-height: 1.7; }
+.management-audit-filters { padding: 0 24px 14px; display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; }
+.management-audit-filters label { display: flex; flex-direction: column; gap: 7px; color: #45616c; font-size: 12px; min-width: 130px; flex: 1; }
+.management-audit-filters label:nth-child(3) { flex: 2; min-width: 180px; }
+.management-audit-filters input, .management-audit-filters select { min-height: 39px; width: 100%; padding: 8px 10px; }
+.management-audit-note { padding: 0 24px 10px; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.management-audit-note strong { font-weight: 550; color: #48636e; }
+.management-range-error { padding: 0 24px 12px; color: #a54335; font-size: 12px; }
+.management-audit .time-cell { white-space: normal; }
+@media (max-width: 700px) {
+  .management-access-preview { margin-left: 19px; margin-right: 19px; }
+  .management-audit-filters { padding-left: 19px; padding-right: 19px; }
+  .management-audit-note, .management-range-error { padding-left: 19px; padding-right: 19px; }
+}
+@media (max-width: 480px) {
+  .management-access-preview { margin-left: 15px; margin-right: 15px; padding: 13px; }
+  .management-access-group > summary { padding: 12px; }
+  .management-access-group > summary span { display: block; margin-left: 16px; }
+  .management-access-nodes { padding: 0 8px; }
+  .management-camera-choices { padding-left: 9px; }
+  .management-audit-filters { padding-left: 15px; padding-right: 15px; gap: 10px; }
+  .management-audit-filters label { flex: 1 1 calc(50% - 10px); min-width: 0; }
+  .management-audit-filters label:nth-child(3), .management-audit-filters label:nth-child(4) { flex-basis: 100%; min-width: 0; }
+  .management-audit-note, .management-range-error { padding-left: 15px; padding-right: 15px; }
+  .management-audit-heading { align-items: flex-start; }
+}
