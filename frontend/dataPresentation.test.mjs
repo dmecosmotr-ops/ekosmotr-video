@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { presentWorkspace, sumMeasured, groupCameras } from './src/dataPresentation.js';
+import { anonymousSession, presentWorkspace, sumMeasured, groupCameras } from './src/dataPresentation.js';
 
 const stations = [{ id: 'a', city: 'Бийск', address: 'Бийск, пер. Перевозный, 7', metrics: { source: 'demo', entries: 99 } }, { id: 'b', city: 'Тула', address: 'Тула, ул. Тестовая, 2', metrics: { source: 'none', entries: null } }];
 const cameras = [{ id: 'demo', stationId: 'a', status: 'demo', metrics: { source: 'demo', entries: 99 } }, { id: 'real', stationId: 'a', status: 'unconnected', metrics: { source: 'none', entries: null } }, { id: 'probe', stationId: null, status: 'recorded_probe' }];
@@ -32,4 +32,14 @@ test('группы камер строятся только из передан�
   assert.equal(groups.length, 2);
   assert.equal(groups.find(g => g.station?.id === 'a').cameras.length, 1);
   assert.equal(groups.find(g => !g.station).cameras[0].id, 'probe');
+});
+
+test('выход очищает пользователя и секрет сессии, сохраняя только подтверждённую политику входа', () => {
+  const prior = { user: { id: 'test-user', stationIds: ['private-station'] }, csrfToken: 'discard',
+    demoLoginAvailable: true, demoDate: '2026-10-30', mode: 'pilot', cameras: ['discard'] };
+  const next = anonymousSession(prior);
+  assert.deepEqual(next, { user: null, csrfToken: null, demoLoginAvailable: true, demoDate: '2026-10-30', mode: 'pilot' });
+  assert.equal(anonymousSession({ demoLoginAvailable: false }).demoLoginAvailable, false);
+  assert.equal(anonymousSession(null).demoLoginAvailable, false);
+  assert.equal(anonymousSession({ demoLoginAvailable: 'true' }).demoLoginAvailable, false);
 });

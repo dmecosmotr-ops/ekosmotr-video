@@ -41,4 +41,4 @@
 
 Наличие GitHub-проекта не доказывает безопасность всей инфраструктуры или готовность многокамерной обработки. Нужны проверка программиста и его решение о deploy. Выбор Linux дистрибутива, домена и портов на сервере остаётся в его зоне. Время GPU/диск под ИИ пока не оценивались по нагрузке; контейнер кабинета по умолчанию не запускает анализ и потоки.
 
-Фактический итог: 145/145 Node, 9/9 Python, frozen pnpm 10.28.2 и frontend build; GitHub CI https://github.com/dmecosmotr-ops/ekosmotr-video/actions/runs/42001844023 — success, включая Docker build и временный Compose auth-smoke на Linux. Сервер компании не затронут.
+Фактический итог: 146/146 Node, 9/9 Python, frozen pnpm 10.28.2 и frontend build; GitHub CI https://github.com/dmecosmotr-ops/ekosmotr-video/actions/runs/42001844023 — success, включая Docker build и временный Compose auth-smoke на Linux. Исправление повторного входа после выхода проверено отдельно в браузере и регрессионным тестом; для новой версии нужно сверить CI последнего коммита. Сервер компании не затронут.

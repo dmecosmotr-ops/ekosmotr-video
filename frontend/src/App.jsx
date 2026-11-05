@@ -9,7 +9,7 @@ import { Brand, Login } from './screens.jsx';
 import { Cameras, Overview } from './WorkspaceScreens.jsx';
 import Events from './EventsScreen.jsx';
 import { Users, Audit } from './ManagementScreens.jsx';
-import { localDay, presentWorkspace } from './dataPresentation.js';
+import { anonymousSession, localDay, presentWorkspace } from './dataPresentation.js';
 import { CameraDetail, ErrorNotice, initials, roleNames, Spinner, StationDetail } from './components.jsx';
 
 const pageTitles = { overview: 'Обзор сети', cameras: 'Камеры по адресам', events: 'События ПТО', users: 'Пользователи и доступ', audit: 'Действия пользователей' };
@@ -70,7 +70,7 @@ export default function App() {
     configureSession(data.csrfToken, () => {
       clearScopedState();
       identity.current = null;
-      setSession({ user: null, csrfToken: null });
+      setSession(anonymousSession);
     });
     setSession(data);
     setSessionEpoch(value => value + 1);
@@ -118,7 +118,7 @@ export default function App() {
   const refreshSession = async () => { const data = await getSession(); setVersion(value => value + 1); return data; };
   const logout = async () => {
     setError('');
-    try { await api('/logout', { method: 'POST' }); configureSession(null); clearScopedState(); identity.current = null; setSession({ user: null, csrfToken: null }); }
+    try { await api('/logout', { method: 'POST' }); configureSession(null); clearScopedState(); identity.current = null; setSession(anonymousSession); }
     catch (failure) { setError(failure.message); }
   };
 

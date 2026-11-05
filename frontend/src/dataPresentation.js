@@ -1,6 +1,12 @@
 const emptyMetrics = () => ({ source: 'none', firstSeenAt: null, openedAt: null, closedAt: null,
   entries: null, exits: null, completedVisits: null, coverage: null, note: 'Видео ещё не анализировалось' });
 
+export function anonymousSession(previous) {
+  return { user: null, csrfToken: null, demoLoginAvailable: previous?.demoLoginAvailable === true,
+    ...(previous?.demoDate ? { demoDate: previous.demoDate } : {}),
+    ...(previous?.mode ? { mode: previous.mode } : {}) };
+}
+
 // This is a display mode, never an access boundary: every input must already be scoped by the API.
 export function presentWorkspace(stations, cameras, events, mode = 'real') {
   const demo = mode === 'demo';
