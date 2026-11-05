@@ -1,0 +1,14 @@
+{
+  "accountId": "REPLACE_WITH_PRIVATE_ACCOUNT_ID",
+  "deviceId": "REPLACE_WITH_PRIVATE_DEVICE_ID",
+  "region": "ru",
+  "model": "REPLACE_WITH_CONFIRMED_MODEL",
+  "go2rtcConfig": "/run/private/config/go2rtc.yaml",
+  "java": "/usr/bin/java",
+  "ffmpeg": "/usr/bin/ffmpeg",
+  "cloudTools": "/app/tools",
+  "pythonDeps": "/usr/local/lib/python3.12/site-packages",
+  "privateRoot": "/run/private/runtime",
+  "javaClasses": "/opt/relay:/opt/vendor/classes",
+  "maxSeconds": 300
+}

@@ -1,6 +1,6 @@
 # Cabinet for PTO cameras
 
-This repository contains the separate camera pilot. Do not mix it with the speech/microphone analysis project. The current product is a cabinet with server-side roles, scoped station/camera access and manual video experiments; real AI results and continuous recording are separate unfinished work.
+This repository contains the separate camera pilot. Do not mix it with the speech/microphone analysis project. It includes a cabinet with server-side roles/scoped access and an optional bounded collector plus preliminary offline CPU video analysis. See docs/VIDEO_PIPELINE_RESULT_2026_11_05.md. Real PTO accuracy, company Linux camera reception and continuous recording are unaccepted work; do not describe test footage as business acceptance.
 
 ## Changes and deployment
 
@@ -21,7 +21,7 @@ This repository contains the separate camera pilot. Do not mix it with the speec
 ## Verification
 
 - Node 24: `node --test tests/*.test.mjs frontend/*.test.mjs deploy/*.test.mjs` from repository root after frontend dependencies are installed.
-- Python: `python -m unittest discover -s tests -p test_live_bridge.py`.
+- Python: `python -m unittest discover -s tests -p 'test_*.py'`; use the optional video environment for OpenCV/ONNX tests and actual FFmpeg for receiver integrity checks. State skips.
 - Build: `pnpm --dir frontend install --frozen-lockfile`, then `pnpm --dir frontend run build` with pinned pnpm 10.28.2.
 - Windows with existing dependencies: `build-pilot.ps1` calls Vite directly.
 - UI changes need browser desktop/mobile checks. Container claims need an actual Docker/CI run; passing Windows tests alone does not establish Linux readiness.

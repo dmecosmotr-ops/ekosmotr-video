@@ -37,11 +37,60 @@ jobs:
         run: pnpm --dir frontend install --frozen-lockfile
       - name: Test backend, frontend and backup tools
         run: npm test
-      - name: Test diagnostic bridge without vendor transport
-        run: python -m unittest discover -s tests -p test_live_bridge.py
+      - name: Test bridge, collector and analysis rules without private video
+        run: python -m unittest discover -s tests -p 'test_*.py'
       - name: Build frontend
         run: pnpm --dir frontend run build
       - name: Build isolated runtime image
         run: docker build --pull --tag camera-pilot-ci:${{ github.sha }} .
       - name: Start disposable container and verify auth
         run: bash deploy/container-smoke.sh camera-pilot-ci:${{ github.sha }}
+
+  video-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Python for public fixture preparation
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Check relay build script syntax
+        run: bash -n deploy/build-relay.sh
+      - name: Prepare hash-pinned public model and image
+        run: python deploy/video-public-assets.py
+      - name: Validate optional Compose overlay without starting a camera
+        env:
+          PILOT_PUBLIC_ORIGIN: https://cameras.example.invalid
+          PILOT_ADMIN_EMAIL: review@example.invalid
+          PILOT_ADMIN_PASSWORD_FILE_HOST: /tmp/camera-ci-bootstrap.txt
+        run: |
+          python -c "from pathlib import Path; Path('/tmp/camera-ci-bootstrap.txt').write_text('Synthetic-CI-Secret-Only-2026!')"
+          docker compose -f compose.yaml -f compose.video.yaml --profile video config --quiet
+      - name: Build optional video image without vendor classes or camera secrets
+        run: docker build --file deploy/video.Dockerfile --tag camera-video-ci:${{ github.sha }} .
+      - name: Test video package with actual OpenCV, FFmpeg and Linux signals
+        run: >-
+          docker run --rm --network none --read-only --cap-drop ALL
+          --security-opt no-new-privileges --cpus 2 --memory 2g --pids-limit 96
+          --tmpfs /tmp:rw,noexec,nosuid,nodev,size=67108864,uid=1000,gid=1000
+          --tmpfs /app/private:rw,noexec,nosuid,nodev,size=67108864,uid=1000,gid=1000
+          --mount type=bind,source=${{ github.workspace }}/tests,target=/app/tests,readonly
+          camera-video-ci:${{ github.sha }} python -m unittest discover -s tests -p 'test_*.py'
+      - name: Run actual CPU inference offline on the public fixture
+        run: >-
+          docker run --rm --network none --read-only --cap-drop ALL
+          --security-opt no-new-privileges --cpus 2 --memory 2g --pids-limit 96
+          --tmpfs /tmp:rw,noexec,nosuid,nodev,size=67108864,uid=1000,gid=1000
+          --mount type=bind,source=${{ github.workspace }}/private/video-ci,target=/fixtures,readonly
+          camera-video-ci:${{ github.sha }} python -m video.runtime_smoke
+          --model /fixtures/yolox_nano.onnx --image /fixtures/dog.jpg
+      - name: Verify real FFmpeg capture and ffprobe offline
+        run: >-
+          docker run --rm --network none --read-only --cap-drop ALL
+          --security-opt no-new-privileges --cpus 2 --memory 2g --pids-limit 96
+          --tmpfs /tmp:rw,noexec,nosuid,nodev,size=67108864,uid=1000,gid=1000
+          camera-video-ci:${{ github.sha }} python -m video.collector_smoke

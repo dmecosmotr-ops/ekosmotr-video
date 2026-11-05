@@ -1,0 +1,14 @@
+{
+  "cameraId": "replace-confirmed-camera-id",
+  "stationId": "replace-confirmed-station-id",
+  "mappingVersion": "v1",
+  "timezone": "Asia/Barnaul",
+  "primary": true,
+  "analysis": {
+    "sampleIntervalSeconds": 1,
+    "personZone": [[0, 0], [1, 0], [1, 1], [0, 1]],
+    "vehicleZone": [[0, 0], [1, 0], [1, 1], [0, 1]],
+    "line": {"start": [0.5, 0.1], "end": [0.5, 0.9], "entryDirection": "positive_to_negative"},
+    "tracking": {"minTrackHits": 3, "sideStableSamples": 2, "lineMargin": 0.025, "maxDistance": 0.2}
+  }
+}

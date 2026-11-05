@@ -14,11 +14,13 @@ export function presentWorkspace(stations, cameras, events, mode = 'real') {
   const cameraIds = new Set(selectedCameras.map(camera => camera.id));
   return {
     cameras: selectedCameras,
-    stations: stations.map(station => ({ ...station,
+    stations: stations.map(station => {
+      const metrics = demo && station.demoMetrics ? station.demoMetrics : station.metrics;
+      return { ...station,
       cameraCount: selectedCameras.filter(camera => camera.stationId === station.id).length,
-      metrics: station.metrics?.source && station.metrics.source !== 'none'
-        && (station.metrics.source === 'demo') === demo ? station.metrics : emptyMetrics(),
-    })),
+      metrics: metrics?.source && metrics.source !== 'none'
+        && (metrics.source === 'demo') === demo ? metrics : emptyMetrics(),
+    }; }),
     events: events.filter(event => cameraIds.has(event.cameraId) && (event.source === 'demo') === demo),
   };
 }

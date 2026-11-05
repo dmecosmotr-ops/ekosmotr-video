@@ -1,0 +1,6 @@
+# Separate OPTIONAL CPU analysis environment; do not install into the web app.
+numpy==2.2.6
+opencv-python-headless==4.12.0.88
+onnxruntime==1.23.2
+# Windows lacks a system IANA timezone database; Linux also works with this pin.
+tzdata==2025.2

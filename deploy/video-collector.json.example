@@ -1,0 +1,19 @@
+{
+  "archiveRoot": "/video/recordings",
+  "cameraId": "replace-confirmed-camera-id",
+  "stationId": "replace-confirmed-station-id",
+  "mappingVersion": "v1",
+  "timezone": "Asia/Barnaul",
+  "pythonExecutable": "/usr/local/bin/python3.12",
+  "ffprobe": "/usr/bin/ffprobe",
+  "ffmpeg": "/usr/bin/ffmpeg",
+  "bridgeConfig": "/run/private/config/bridge.json",
+  "maxSeconds": 300,
+  "startupTimeoutSeconds": 110,
+  "stallTimeoutSeconds": 20,
+  "totalTimeoutSeconds": 420,
+  "maxBytes": 268435456,
+  "minFreeBytes": 536870912,
+  "probeTimeoutSeconds": 10,
+  "decodeTimeoutSeconds": 120
+}

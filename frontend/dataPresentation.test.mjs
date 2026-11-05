@@ -43,3 +43,9 @@ test('выход очищает пользователя и секрет сес�
   assert.equal(anonymousSession(null).demoLoginAvailable, false);
   assert.equal(anonymousSession({ demoLoginAvailable: 'true' }).demoLoginAvailable, false);
 });
+
+test('real results on the example date cannot replace the independent scoped demo summary', () => {
+  const incoming = [{ id: 'a', metrics: { source: 'analysis', entries: 2 }, demoMetrics: { source: 'demo', entries: 7 } }];
+  assert.equal(presentWorkspace(incoming, cameras, [], 'demo').stations[0].metrics.entries, 7);
+  assert.equal(presentWorkspace(incoming, cameras, [], 'real').stations[0].metrics.entries, 2);
+});

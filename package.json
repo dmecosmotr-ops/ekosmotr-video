@@ -9,7 +9,7 @@
     "start": "node backend/server.mjs",
     "check:release": "node tools/check-release.mjs",
     "test": "node --test tests/*.test.mjs frontend/*.test.mjs deploy/*.test.mjs",
-    "test:python": "python -m unittest discover -s tests -p test_live_bridge.py",
+    "test:python": "python -m unittest discover -s tests -p test_*.py",
     "build": "pnpm --dir frontend run build"
   }
 }

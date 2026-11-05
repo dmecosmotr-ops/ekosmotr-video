@@ -13,6 +13,11 @@ export function clock(value, precise = false) {
   return precise ? `${match[1]}:${match[2] || '00'}${match[3] || ''}` : match[1];
 }
 
+export function observedClock(value, timing, precise = false) {
+  const formatted = clock(value, precise);
+  return formatted !== '—' && timing === 'estimated' ? `≈ ${formatted}` : formatted;
+}
+
 export function durationLabel(seconds) {
   if (seconds === null || seconds === undefined || !Number.isFinite(seconds) || seconds < 0) return '—';
   const whole = Math.round(seconds);
@@ -69,7 +74,26 @@ export function playbackBounds(record, mediaDuration = Infinity) {
   return clamped.end > clamped.start ? clamped : null;
 }
 
+export function eventRecordSelection(records = [], event) {
+  const evidence = event?.evidence;
+  const record = records.find(item => item.id === evidence?.recordingId);
+  const offset = evidence?.offsetSeconds;
+  if (!record || !Number.isFinite(offset) || offset < record.startOffsetSeconds || offset >= record.endOffsetSeconds) {
+    return { records, recordId: records[0]?.id || null };
+  }
+  return { recordId: record.id, records: records.map(item => item === record
+    ? { ...item, startOffsetSeconds: offset, endOffsetSeconds: Math.min(item.endOffsetSeconds, offset + 30) } : item) };
+}
+
+export function evidenceRecordingPath(event, cameraId) {
+  const id = /^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$/;
+  const recordingId = event?.evidence?.recordingId, offset = event?.evidence?.offsetSeconds;
+  if (event?.cameraId !== cameraId || !id.test(cameraId || '') || !id.test(recordingId || '')
+    || !Number.isFinite(offset) || offset < 0 || offset >= 900) return null;
+  return `/cameras/${encodeURIComponent(cameraId)}/recordings/${encodeURIComponent(recordingId)}?offsetSeconds=${offset}`;
+}
+
 export function archiveDateLabel(playback, records = []) {
-  const date = playback?.archive?.sampleRange?.date || records[0]?.startAt?.slice(0, 10);
+  const date = records[0]?.startAt?.slice(0, 10) || playback?.archive?.sampleRange?.date;
   return /^\d{4}-\d{2}-\d{2}$/.test(date || '') ? date.split('-').reverse().join('.') : null;
 }

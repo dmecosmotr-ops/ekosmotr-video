@@ -1,6 +1,32 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { archiveDateLabel, buildVisits, eventArchiveRange, playbackBounds, secondsOf } from './src/playbackHelpers.js';
+import { archiveDateLabel, buildVisits, eventArchiveRange, eventRecordSelection, evidenceRecordingPath, observedClock, playbackBounds, secondsOf } from './src/playbackHelpers.js';
+
+test('estimated observation clocks stay visibly approximate while unknown time stays unknown', () => {
+  assert.equal(observedClock('08:12:03', 'estimated', true), '≈ 08:12:03');
+  assert.equal(observedClock('08:12:03', 'verified'), '08:12');
+  assert.equal(observedClock(null, 'estimated'), '—');
+});
+
+test('recording action selects the exact evidence file and bounded offset instead of the first search match', () => {
+  const records = [{ id: 'old', startOffsetSeconds: 0, endOffsetSeconds: 25 }, { id: 'evidence', startOffsetSeconds: 1, endOffsetSeconds: 29 }];
+  const selected = eventRecordSelection(records, { evidence: { recordingId: 'evidence', offsetSeconds: 12.5 } });
+  assert.equal(selected.recordId, 'evidence');
+  assert.equal(selected.records[1].startOffsetSeconds, 12.5);
+  assert.equal(selected.records[1].endOffsetSeconds, 29);
+  assert.equal(records[1].startOffsetSeconds, 1);
+  assert.equal(eventRecordSelection(records, { evidence: { recordingId: 'evidence', offsetSeconds: -1 } }).recordId, 'old');
+  assert.equal(eventRecordSelection([], {}).recordId, null);
+});
+
+test('evidence uses exact recording offset even during the last fraction of a day and rejects other cameras or unsafe IDs', () => {
+  const event = { cameraId: 'camera-1', time: '23:59:59.500', evidence: { recordingId: 'run-1', offsetSeconds: 9.5 } };
+  assert.equal(evidenceRecordingPath(event, 'camera-1'), '/cameras/camera-1/recordings/run-1?offsetSeconds=9.5');
+  assert.equal(evidenceRecordingPath(event, 'camera-2'), null);
+  assert.ok(evidenceRecordingPath({ ...event, cameraId: 'c'.repeat(96), evidence: { recordingId: 'r'.repeat(96), offsetSeconds: 1e-7 } }, 'c'.repeat(96))?.endsWith('offsetSeconds=1e-7'));
+  assert.equal(evidenceRecordingPath({ ...event, evidence: { recordingId: '../private', offsetSeconds: 9.5 } }, 'camera-1'), null);
+  assert.equal(evidenceRecordingPath({ ...event, evidence: { recordingId: 'run-1', offsetSeconds: NaN } }, 'camera-1'), null);
+});
 
 const event = (id, type, cameraId, visitId, time) => ({ id, type, cameraId, visitId, time, stationId: 'station' });
 test('only matching visit ID within the same camera is a completed visit', () => {
@@ -42,4 +68,5 @@ test('unconnected camera without actual sample has no claimed recording date', (
 test('recording date is taken from an actual sample or returned record', () => {
   assert.equal(archiveDateLabel({ archive: { sampleRange: { date: '2026-10-30' } } }), '30.10.2026');
   assert.equal(archiveDateLabel({}, [{ startAt: '2026-11-03T12:00:00' }]), '03.11.2026');
+  assert.equal(archiveDateLabel({ archive: { sampleRange: { date: '2026-10-30' } } }, [{ startAt: '2026-11-05T23:59:59.500' }]), '05.11.2026');
 });

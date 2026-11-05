@@ -9,9 +9,11 @@ const sourcePaths = [
   /^frontend\/src\/[\w./-]+\.(?:jsx?|css)$/, /^frontend\/[\w.-]+\.test\.mjs$/,
   /^frontend\/(?:package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|index\.html|vite\.config\.js)$/,
   /^tools\/[\w.-]+\.(?:py|java|mjs|txt)$/, /^docs\/[\w.-]+\.md$/,
-  /^deploy\/[\w.-]+\.(?:mjs|sh|md|example)$/, /^data\/(?:stations\.json|SOURCE\.md)$/,
+  /^video\/[\w.-]+\.(?:py|txt)$/, /^docs\/YOLOX_LICENSE\.txt$/,
+  /^deploy\/[\w.-]+\.(?:mjs|sh|py|md|example)$/, /^data\/(?:stations\.json|SOURCE\.md)$/,
   /^\.github\/workflows\/ci\.yml$/, /^[A-Z][A-Z0-9_]*\.md$/,
-  /^(?:\.gitignore|\.gitattributes|\.dockerignore|\.env\.example|Dockerfile|compose\.yaml|package\.json|[\w-]+\.ps1)$/,
+  /^deploy\/video\.Dockerfile$/,
+  /^(?:\.gitignore|\.gitattributes|\.dockerignore|\.env\.example|Dockerfile|compose(?:\.video)?\.yaml|package\.json|[\w-]+\.ps1)$/,
 ];
 const highConfidenceSecrets = [
   [/\bgh[pousr]_[A-Za-z0-9]{25,}\b/, 'GitHub token'],

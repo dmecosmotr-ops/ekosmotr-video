@@ -1,5 +1,13 @@
 # Camera pilot API contract
 
+## Optional recorded video analysis — 05.11.2026
+
+`PILOT_ANALYSIS_CONFIG` / `createApp({analysisConfigFile})` enables explicitly confirmed camera/station/mappingVersion/timezone bindings and read-only private result/archive roots. The strict v1 manifest is defined in `docs/VIDEO_ANALYSIS_PLAN_2026_11_05.md`. All observations remain `source:analysis`, `coverage:partial`, `needsReview:true`; estimated camera timing is explicit. Positive counters come only from the visible designated primary camera; an empty fragment is not a zero day. `openedAt/closedAt` stay null; gate candidates are separate review events. Stations expose separately scoped `demoMetrics` so a real result cannot replace the example on its date.
+
+Events add `occurredAtUtc`, local `date/time`, `runId`, `pipelineVersion`, `timing`, and `evidence:{recordingId,offsetSeconds,mediaUrl}`. Exact playback: authenticated/scoped `GET /api/cameras/:id/recordings/:recordingId?offsetSeconds=<finite>` returns `{record}` with the exact original offset and at most30seconds to the file end, including midnight. No fallback to another recording. Protected media is `GET /api/cameras/:id/recordings/:recordingId/media`; bounded single Range, current session/permissions and registered file checks apply. Archive playback/search preserve the prior shapes and include partial/timing metadata. No private path or provider key is returned. Shutdown cancels active archive streams before closing SQLite.
+
+Collector and CPU analysis run as explicit one-shot commands in the separate optional video image. Their processes never access the user DB; the default cabinet remains independent. Setup, limits and remaining company-server acceptance: `docs/VIDEO_RECEIVER_SETUP.md` and `docs/VIDEO_PIPELINE_RESULT_2026_11_05.md`. No automatic70-camera collection or deployment is added.
+
 Same origin `/api`, JSON. Error: `{error: "Короткое понятное сообщение", code: "ENUM"}`. Success bodies directly objects. All collection endpoints return objects with named arrays. Dates `YYYY-MM-DD`, times local station as strings or null. Default demo date `2026-10-30`.
 
 ## Display update — 05.11.2026

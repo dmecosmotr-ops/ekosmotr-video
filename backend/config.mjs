@@ -65,5 +65,6 @@ export function loadConfig(env = process.env) {
     stationFile: env.PILOT_STATIONS || resolve(appRoot, 'data/stations.json'),
     mediaFile: env.PILOT_PROBE_MEDIA || undefined,
     inventoryFile: env.PILOT_CAMERA_INVENTORY || undefined,
+    analysisConfigFile: env.PILOT_ANALYSIS_CONFIG || undefined,
     liveConfigFile: env.PILOT_LIVE_CONFIG || undefined };
 }

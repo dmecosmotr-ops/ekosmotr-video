@@ -8,6 +8,8 @@ import { makeDemo, DEMO_DATE, aggregateMetrics, noneMetrics, buildVisits } from 
 import { hasProbeMedia, validDate, timeSeconds, playbackState, archiveSearch } from './playback.mjs';
 import { importInventory } from './inventory.mjs';
 import { createLiveManager, LiveError } from './live.mjs';
+import { loadAnalysisConfig, confirmedCameras, readAnalysis, analysisEvents, analysisMetrics } from './analysis.mjs';
+import { analysisPlayback, searchAnalysisArchive, exactAnalysisRecording, openAnalysisMedia, mediaRange } from './analysisArchive.mjs';
 import { randomToken, tokenHash, hashPassword, verifyPassword, equalTokens,
   SESSION_SECONDS, cookieToken, sessionCookie, validOrigin } from './security.mjs';
 
@@ -50,7 +52,7 @@ async function bodyJSON(request) {
 }
 
 export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
-  stationFile = resolve(appRoot, 'data/stations.json'), mediaFile, inventoryFile, liveConfigFile,
+  stationFile = resolve(appRoot, 'data/stations.json'), mediaFile, inventoryFile, liveConfigFile, analysisConfigFile,
   staticDir = resolve(appRoot, 'frontend/dist'), deploymentConfig } = {}) {
   deploymentConfig = normalizeDeploymentConfig(deploymentConfig);
   const source = JSON.parse(readFileSync(stationFile, 'utf8'));
@@ -60,6 +62,12 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
   const stationMap = new Map(stations.map(s => [s.id, s]));
   const { cameras, events } = makeDemo(stations);
   cameras.push(...importInventory(inventoryFile, stations, cameras.map(camera => camera.id)));
+  const analysisConfig = loadAnalysisConfig(analysisConfigFile, stations, cameras);
+  for (const camera of confirmedCameras(analysisConfig)) {
+    const index = cameras.findIndex(existing => existing.id === camera.id);
+    if (index >= 0) cameras[index] = camera;
+    else cameras.push(camera);
+  }
   const cameraMap = new Map(cameras.map(c => [c.id, c]));
   const { db, audit, insert } = openStore(dbPath, stations, cameras.filter(c => c.status === 'demo').map(c => c.stationId), deploymentConfig);
   const getUserRow = id => db.prepare('SELECT * FROM users WHERE id=?').get(id);
@@ -83,6 +91,7 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
     return bucket;
   }
   let closed = false, closePromise = null;
+  const archiveStreams = new Set();
   const live = createLiveManager({ configFile: liveConfigFile, cameraIds: cameraMap.keys(),
     onEvent: (action, ownerId, cameraId, reason) => {
       const row = getUserRow(ownerId);
@@ -203,6 +212,40 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
     stream.pipe(response);
   }
 
+  function serveRecording(request, response, session, cameraId, recordingId) {
+    const camera = cameraMap.get(cameraId);
+    requireCondition(canCamera(session.user, camera), 403, 'Нет доступа к этой камере', 'CAMERA_FORBIDDEN');
+    const runs = readAnalysis(analysisConfig).filter(run => run.cameraId === cameraId);
+    const opened = openAnalysisMedia(runs, cameraId, recordingId);
+    requireCondition(opened, 404, 'Запись недоступна', 'MEDIA_UNAVAILABLE');
+    const range = mediaRange(request.headers.range, opened.size);
+    if (!range) { opened.close(); response.writeHead(416, { 'Content-Range': `bytes */${opened.size}`, 'Cache-Control': 'no-store' }); response.end(); return; }
+    const headers = { 'Content-Type': 'video/mp4', 'Accept-Ranges': 'bytes',
+      'Content-Length': range.end - range.start + 1, 'Cache-Control': 'no-store' };
+    if (range.status === 206) headers['Content-Range'] = `bytes ${range.start}-${range.end}/${opened.size}`;
+    response.writeHead(range.status, headers);
+    if (request.method === 'HEAD') { opened.close(); response.end(); return; }
+    // Ownership transfers to the stream, which closes only after pending I/O has
+    // finished. Never close an fd synchronously while a cancelled read is pending.
+    const stream = createReadStream('', { fd: opened.fd, autoClose: true, start: range.start, end: range.end });
+    let timer;
+    const cleanup = () => { clearInterval(timer); stream.destroy(); };
+    const active = { stop() { cleanup(); response.destroy(); } };
+    active.done = new Promise(resolve => stream.once('close', () => {
+      clearInterval(timer); archiveStreams.delete(active); resolve();
+    }));
+    archiveStreams.add(active);
+    timer = setInterval(() => {
+      if (closed) { active.stop(); return; }
+      const current = currentSession(request);
+      if (!current || current.hash !== session.hash || !canCamera(current.user, camera)) response.destroy();
+    }, 1000);
+    timer.unref();
+    stream.on('error', () => response.destroy());
+    response.once('close', cleanup);
+    stream.pipe(response);
+  }
+
   function serveStatic(request, response, pathname) {
     requireCondition(['GET', 'HEAD'].includes(request.method), 405, 'Метод не поддерживается', 'METHOD_NOT_ALLOWED');
     const root = resolve(staticDir);
@@ -283,20 +326,32 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
     }
     if (pathname === '/api/stations' && request.method === 'GET') {
       const date = checkDate(url), allowedCameras = visibleCameras(user);
+      const runs = readAnalysis(analysisConfig).filter(run => allowedCameras.some(c => c.id === run.cameraId));
+      const stationMetrics = stationId => {
+        const own = allowedCameras.filter(c => c.stationId === stationId);
+        const primary = own.find(c => c.source === 'analysis_config' && c.primary);
+        const measured = primary && analysisMetrics(runs, primary.id, date);
+        if (measured?.source === 'analysis') return measured;
+        return aggregateMetrics(own, date);
+      };
       return respond(response, 200, { stations: visibleStations(user).map(s => ({ ...s,
         cameraCount: allowedCameras.filter(c => c.stationId === s.id).length,
-        metrics: aggregateMetrics(allowedCameras.filter(c => c.stationId === s.id), date) })),
+        metrics: stationMetrics(s.id),
+        demoMetrics: aggregateMetrics(allowedCameras.filter(c => c.stationId === s.id && c.status === 'demo'), date) })),
         demoDate: DEMO_DATE, demo: date === DEMO_DATE });
     }
     if (pathname === '/api/cameras' && request.method === 'GET') {
       const date = checkDate(url), stationId = url.searchParams.get('stationId');
+      const runs = readAnalysis(analysisConfig).filter(run => canCamera(user, cameraMap.get(run.cameraId)));
       return respond(response, 200, { cameras: visibleCameras(user).filter(c => !stationId || c.stationId === stationId)
         .map(c => {
           const { candidateStationIds, ...safeCamera } = c;
           return { ...safeCamera, ...(user.role === 'admin' && candidateStationIds ? { candidateStationIds } : {}),
             liveAvailable: live.available(c.id),
-            archiveAvailable: c.id === 'probe-c300' && hasProbeMedia(mediaFile),
-            metrics: c.status === 'demo' && date === DEMO_DATE ? c.metrics : noneMetrics(c.metrics.note),
+            archiveAvailable: c.source === 'analysis_config' ? analysisPlayback(runs, c.id).status === 'available'
+              : c.id === 'probe-c300' && hasProbeMedia(mediaFile),
+            metrics: c.source === 'analysis_config' ? analysisMetrics(runs, c.id, date)
+              : c.status === 'demo' && date === DEMO_DATE ? c.metrics : noneMetrics(c.metrics.note),
             mediaUrl: c.id === 'probe-c300' && hasProbeMedia(mediaFile) ? '/api/cameras/probe-c300/media' : null };
         }) });
     }
@@ -305,13 +360,19 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
       const scopedEvents = date === DEMO_DATE ? events.filter(e =>
         canCamera(user, cameraMap.get(e.cameraId)) && (!stationId || e.stationId === stationId)
         && (!cameraId || e.cameraId === cameraId)) : [];
+      const runs = readAnalysis(analysisConfig).filter(run => canCamera(user, cameraMap.get(run.cameraId))
+        && (!stationId || run.stationId === stationId) && (!cameraId || run.cameraId === cameraId));
+      scopedEvents.push(...analysisEvents(runs, date));
       return respond(response, 200, pathname === '/api/visits' ? { visits: buildVisits(scopedEvents) } : { events: scopedEvents });
     }
     const playbackMatch = /^\/api\/cameras\/([^/]+)\/playback$/.exec(pathname);
     if (playbackMatch && request.method === 'GET') {
       const camera = cameraMap.get(playbackMatch[1]);
       requireCondition(canCamera(user, camera), 403, 'Нет доступа к этой камере', 'CAMERA_FORBIDDEN');
-      return respond(response, 200, playbackState(camera, hasProbeMedia(mediaFile), live.available(camera.id)));
+      const playback = playbackState(camera, hasProbeMedia(mediaFile), live.available(camera.id));
+      if (camera.source === 'analysis_config') playback.archive = analysisPlayback(
+        readAnalysis(analysisConfig).filter(run => run.cameraId === camera.id), camera.id);
+      return respond(response, 200, playback);
     }
     const liveStart = /^\/api\/cameras\/([^/]+)\/live$/.exec(pathname);
     if (liveStart && request.method === 'POST') {
@@ -344,8 +405,30 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
       const start = timeSeconds(interval.from), end = timeSeconds(interval.to);
       requireCondition(start !== null && end !== null && start < end,
         400, 'Укажите время в формате ЧЧ:ММ или ЧЧ:ММ:СС. Конец должен быть позже начала в тот же день.', 'INVALID_ARCHIVE_INTERVAL');
-      return respond(response, 200, archiveSearch(camera, interval, hasProbeMedia(mediaFile)));
+      return respond(response, 200, camera.source === 'analysis_config'
+        ? searchAnalysisArchive(readAnalysis(analysisConfig).filter(run => run.cameraId === camera.id), camera.id, interval)
+        : archiveSearch(camera, interval, hasProbeMedia(mediaFile)));
     }
+    const exactRecordingMatch = /^\/api\/cameras\/([^/]+)\/recordings\/([^/]+)$/.exec(pathname);
+    if (exactRecordingMatch && request.method === 'GET') {
+      const camera = cameraMap.get(exactRecordingMatch[1]);
+      requireCondition(canCamera(user, camera), 403, 'Нет доступа к этой камере', 'CAMERA_FORBIDDEN');
+      const value = url.searchParams.get('offsetSeconds'), offset = Number(value);
+      requireCondition(url.searchParams.getAll('offsetSeconds').length === 1 && value !== null
+        && value.length <= 32 && /^(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value)
+        && Number.isFinite(offset) && offset >= 0,
+      400, 'Укажите корректное смещение записи в секундах', 'INVALID_RECORDING_OFFSET');
+      const runs = readAnalysis(analysisConfig).filter(run => run.cameraId === camera.id);
+      const run = runs.find(run => run.recording.id === exactRecordingMatch[2]);
+      requireCondition(run, 404, 'Запись недоступна', 'MEDIA_UNAVAILABLE');
+      requireCondition(offset < run.recording.durationSeconds, 400, 'Смещение выходит за границы записи', 'INVALID_RECORDING_OFFSET');
+      const record = exactAnalysisRecording(runs, camera.id, exactRecordingMatch[2], offset);
+      requireCondition(record, 404, 'Запись недоступна', 'MEDIA_UNAVAILABLE');
+      return respond(response, 200, { record });
+    }
+    const recordingMatch = /^\/api\/cameras\/([^/]+)\/recordings\/([^/]+)\/media$/.exec(pathname);
+    if (recordingMatch && ['GET', 'HEAD'].includes(request.method))
+      return serveRecording(request, response, session, recordingMatch[1], recordingMatch[2]);
     const mediaMatch = /^\/api\/cameras\/([^/]+)\/media$/.exec(pathname);
     if (mediaMatch && ['GET', 'HEAD'].includes(request.method)) return serveMedia(request, response, user, mediaMatch[1]);
     if (pathname === '/api/users' && request.method === 'GET') {
@@ -413,7 +496,13 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
     else respond(response, 500, { error: 'Не удалось выполнить действие. Повторите попытку', code: 'INTERNAL_ERROR' });
   });
   handler.close = () => {
-    if (!closed) { closed = true; closePromise = live.close(); db.close(); }
+    if (!closed) {
+      closed = true;
+      const active = [...archiveStreams];
+      for (const stream of active) stream.stop();
+      closePromise = Promise.all([live.close(), ...active.map(stream => stream.done)]).then(() => undefined);
+      db.close();
+    }
     return closePromise;
   };
   return handler;
