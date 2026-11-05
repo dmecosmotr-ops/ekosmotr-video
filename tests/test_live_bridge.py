@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -11,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 BRIDGE = pathlib.Path(__file__).resolve().parents[1] / 'tools' / 'xiaomi_live_bridge.py'
+TEST_TMPDIR = pathlib.Path(os.environ.get('PILOT_TEST_TMPDIR', pathlib.Path(__file__).parent))
 
 
 class BridgeTests(unittest.TestCase):
@@ -48,7 +50,7 @@ class BridgeTests(unittest.TestCase):
         self.assertIn('frag_keyframe+empty_moov+default_base_moof', args)
 
     def test_configuration_requires_private_path_and_rejects_invalid_identifiers(self):
-        with tempfile.TemporaryDirectory(dir=pathlib.Path(__file__).parent) as directory:
+        with tempfile.TemporaryDirectory(dir=TEST_TMPDIR) as directory:
             root = pathlib.Path(directory)
             config = root / 'config.json'
             config.write_text('{}')
@@ -103,7 +105,7 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(provisioning[0]['did'], '123')
 
     def test_complete_private_configuration_accepts_classpath_directories(self):
-        with tempfile.TemporaryDirectory(dir=pathlib.Path(__file__).parent) as directory:
+        with tempfile.TemporaryDirectory(dir=TEST_TMPDIR) as directory:
             private = pathlib.Path(directory) / 'private'
             private.mkdir()
             for name in ('java', 'ffmpeg', 'go2rtc'):

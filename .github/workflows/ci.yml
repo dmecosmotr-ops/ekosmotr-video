@@ -76,6 +76,7 @@ jobs:
         run: >-
           docker run --rm --network none --read-only --cap-drop ALL
           --security-opt no-new-privileges --cpus 2 --memory 2g --pids-limit 96
+          --env PILOT_TEST_TMPDIR=/tmp
           --tmpfs /tmp:rw,noexec,nosuid,nodev,size=67108864,uid=1000,gid=1000
           --tmpfs /app/private:rw,noexec,nosuid,nodev,size=67108864,uid=1000,gid=1000
           --mount type=bind,source=${{ github.workspace }}/tests,target=/app/tests,readonly
