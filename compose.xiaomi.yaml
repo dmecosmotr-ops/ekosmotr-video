@@ -1,0 +1,103 @@
+# Opt in with: docker compose -f compose.yaml -f compose.xiaomi.yaml ...
+x-xiaomi-image: &xiaomi-image
+  image: ${PILOT_XIAOMI_IMAGE:-ekosmotr-camera-xiaomi:review}
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: xiaomi-runtime
+
+x-xiaomi-worker: &xiaomi-worker
+  <<: *xiaomi-image
+  init: true
+  user: "1000:1000"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 48
+  cpus: "${PILOT_XIAOMI_SYNC_CPUS:-0.5}"
+  mem_limit: ${PILOT_XIAOMI_SYNC_MEMORY_LIMIT:-256m}
+  memswap_limit: ${PILOT_XIAOMI_SYNC_MEMORY_LIMIT:-256m}
+  stop_grace_period: 10s
+  healthcheck:
+    disable: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=16777216,uid=1000,gid=1000,mode=1700
+    - /run/private/runtime:rw,noexec,nosuid,nodev,size=16777216,uid=1000,gid=1000,mode=0700
+  logging:
+    driver: json-file
+    options: {max-size: 2m, max-file: "2"}
+
+x-xiaomi-vendor: &xiaomi-vendor
+  type: bind
+  source: ${PILOT_XIAOMI_VENDOR_DIR:-./private/xiaomi-vendor}
+  target: /opt/vendor/classes
+  read_only: true
+  bind: {create_host_path: false}
+
+x-xiaomi-relay: &xiaomi-relay
+  type: bind
+  source: ${PILOT_XIAOMI_RELAY_DIR:-./private/xiaomi-relay}
+  target: /opt/relay
+  read_only: true
+  bind: {create_host_path: false}
+
+x-xiaomi-session: &xiaomi-session
+  type: bind
+  source: ${PILOT_XIAOMI_SESSION_DIR:-./private/xiaomi-session}
+  target: /run/private/session
+  read_only: true
+  bind: {create_host_path: false}
+
+services:
+  camera-pilot:
+    <<: *xiaomi-image
+    pids_limit: 128
+    cpus: "${PILOT_XIAOMI_CABINET_CPUS:-2.0}"
+    mem_limit: ${PILOT_XIAOMI_CABINET_MEMORY_LIMIT:-1g}
+    memswap_limit: ${PILOT_XIAOMI_CABINET_MEMORY_LIMIT:-1g}
+    environment:
+      PILOT_XIAOMI_SYNC_DIR: /var/lib/xiaomi/private/catalog
+    tmpfs:
+      - /run/private/runtime:rw,noexec,nosuid,nodev,size=16777216,uid=1000,gid=1000,mode=0700
+    volumes:
+      - xiaomi-catalog:/var/lib/xiaomi/private/catalog:ro
+      - *xiaomi-session
+      - *xiaomi-vendor
+      - *xiaomi-relay
+    networks: [cabinet, xiaomi-cabinet-egress]
+
+  xiaomi-sync:
+    <<: *xiaomi-worker
+    restart: unless-stopped
+    command: [/opt/xiaomi/bin/python, tools/xiaomi_sync.py, --config, /run/private/config/sync-config.json, --loop]
+    volumes:
+      - xiaomi-catalog:/var/lib/xiaomi/private/catalog
+      - *xiaomi-session
+      - type: bind
+        source: ${PILOT_XIAOMI_CONFIG_DIR:-./private/xiaomi-config}
+        target: /run/private/config
+        read_only: true
+        bind: {create_host_path: false}
+      - *xiaomi-vendor
+      - *xiaomi-relay
+    networks: [xiaomi-sync-egress]
+
+  xiaomi-relay-build:
+    <<: *xiaomi-worker
+    profiles: [xiaomi-setup]
+    restart: "no"
+    command: [/bin/bash, deploy/build-relay.sh, /opt/vendor/classes, /opt/relay]
+    network_mode: none
+    volumes:
+      - *xiaomi-vendor
+      - <<: *xiaomi-relay
+        read_only: false
+
+volumes:
+  xiaomi-catalog:
+
+networks:
+  xiaomi-cabinet-egress:
+    driver: bridge
+  xiaomi-sync-egress:
+    driver: bridge

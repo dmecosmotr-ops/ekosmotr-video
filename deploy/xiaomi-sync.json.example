@@ -1,0 +1,6 @@
+{
+  "go2rtcConfig": "/run/private/session/go2rtc.yaml",
+  "bridgeTemplate": "/run/private/config/live-bridge.json",
+  "outputDir": "/var/lib/xiaomi/private/catalog",
+  "intervalSeconds": 300
+}

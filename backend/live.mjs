@@ -11,19 +11,42 @@ const bounded = (value, fallback, min, max) => Number.isFinite(value) && value >
 const STOP_REASONS = new Set(['stopped', 'startup_timeout', 'ticket_expired', 'duration_limit', 'access_revoked',
   'stalled', 'disconnected', 'bridge_error', 'bridge_closed', 'logout', 'server_closed']);
 
+function liveRoute(input, cameraIds) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || !cameraIds.has(input.cameraId)
+    || typeof input.command !== 'string' || !isAbsolute(input.command) || !statSync(input.command).isFile()
+    || typeof input.cwd !== 'string' || !isAbsolute(input.cwd) || !statSync(input.cwd).isDirectory()
+    || !Array.isArray(input.args) || input.args.length > 16
+    || input.args.some(arg => typeof arg !== 'string' || arg.length > 4096 || /[\0\r\n]/.test(arg))) return null;
+  return { cameraId: input.cameraId, command: input.command, args: input.args, cwd: input.cwd,
+    maxDurationSeconds: bounded(input.maxDurationSeconds, 600, 1, 600),
+    startupTimeoutMs: bounded(input.startupTimeoutMs, 110000, 50, 110000),
+    stallTimeoutMs: bounded(input.stallTimeoutMs, 15000, 50, 15000) };
+}
+
 export function loadLiveConfiguration(file, cameraIds) {
   try {
-    if (!file || statSync(file).size > 16384) return null;
+    if (!file) return null;
+    const info = statSync(file);
+    if (!info.isFile() || info.size > 512 * 1024) return null;
     const input = JSON.parse(readFileSync(file, 'utf8'));
-    if (!cameraIds.has(input.cameraId) || !isAbsolute(input.command) || !statSync(input.command).isFile()
-      || !isAbsolute(input.cwd) || !statSync(input.cwd).isDirectory()
-      || !Array.isArray(input.args) || input.args.length > 16
-      || input.args.some(arg => typeof arg !== 'string' || arg.length > 4096 || /[\0\r\n]/.test(arg))) return null;
-    return { cameraId: input.cameraId, command: input.command, args: input.args, cwd: input.cwd,
-      maxDurationSeconds: bounded(input.maxDurationSeconds, 600, 1, 600),
-      startupTimeoutMs: bounded(input.startupTimeoutMs, 110000, 50, 110000),
-      stallTimeoutMs: bounded(input.stallTimeoutMs, 15000, 50, 15000) };
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+    if (!Object.hasOwn(input, 'cameras')) return info.size <= 16384 ? liveRoute(input, cameraIds) : null;
+    return parseLiveRoutes(input, cameraIds);
   } catch { return null; }
+}
+
+export function parseLiveRoutes(input, cameraIds, { allowEmpty = false } = {}) {
+  if (!Array.isArray(input?.cameras) || Object.keys(input).length !== 1 || input.cameras.length > 150
+    || (!allowEmpty && !input.cameras.length)) return null;
+  const routes = new Map();
+  try {
+    for (const entry of input.cameras) {
+      const route = liveRoute(entry, cameraIds);
+      if (!route || routes.has(route.cameraId)) return null;
+      routes.set(route.cameraId, route);
+    }
+  } catch { return null; }
+  return { cameras: [...routes.values()] };
 }
 
 const jsonError = (response, status, code, message) => {
@@ -36,7 +59,8 @@ const jsonError = (response, status, code, message) => {
 /** One bounded live subprocess. Configuration is local-only; HTTP cannot choose commands or sources. */
 export function createLiveManager({ configFile, cameraIds, onEvent = () => {}, ticketTtlMs = 20000,
   rightsIntervalMs = 1000 } = {}) {
-  const config = loadLiveConfiguration(configFile, new Set(cameraIds));
+  const input = loadLiveConfiguration(configFile, new Set(cameraIds));
+  let routes = new Map((input?.cameras ?? (input ? [input] : [])).map(route => [route.cameraId, route]));
   let active = null, closed = false, closePromise = null;
   const notify = (action, item, reason) => { try { onEvent(action, item.ownerId, item.cameraId,
     action === 'stop' ? (STOP_REASONS.has(reason) ? reason : 'stopped') : undefined); } catch {} };
@@ -70,7 +94,7 @@ export function createLiveManager({ configFile, cameraIds, onEvent = () => {}, t
       || item.ownerId !== ownerId || item.loginHash !== loginHash) deny();
     return item;
   }
-  const available = cameraId => Boolean(!closed && config && config.cameraId === cameraId);
+  const available = cameraId => !closed && routes.has(cameraId);
   const waitForBridge = item => !item?.child || item.child.exitCode !== null ? Promise.resolve() : new Promise(resolve => {
     const deadline = setTimeout(resolve, 6000);
     deadline.unref();
@@ -78,11 +102,19 @@ export function createLiveManager({ configFile, cameraIds, onEvent = () => {}, t
   });
   return {
     available,
+    replaceRoutes(next, revoked) {
+      routes = new Map(next.map(route => [route.cameraId, route]));
+      if (!active) return;
+      const route = routes.get(active.cameraId);
+      if (!route || revoked.has(active.cameraId)) stop(active, 'access_revoked');
+      else if (active.state === 'ticket') active.config = route;
+    },
     create(cameraId, ownerId, loginHash) {
-      if (!available(cameraId)) throw new LiveError(503, 'Онлайн этой камеры пока не подключён', 'LIVE_NOT_CONFIGURED');
+      const config = routes.get(cameraId);
+      if (closed || !config) throw new LiveError(503, 'Онлайн этой камеры пока не подключён', 'LIVE_NOT_CONFIGURED');
       if (active) throw new LiveError(409, 'В пилоте уже открыт один просмотр. Остановите его и повторите подключение.', 'LIVE_BUSY');
       const id = randomBytes(24).toString('base64url');
-      const item = active = { id, cameraId, ownerId, loginHash, state: 'ticket', child: null,
+      const item = active = { id, cameraId, ownerId, loginHash, config, state: 'ticket', child: null,
         timers: new Set(), response: null, startedAt: Date.now(), lastByteAt: 0 };
       const ttl = setTimeout(() => stop(item, 'ticket_expired'), Math.min(20000, ticketTtlMs));
       ttl.unref(); item.timers.add(ttl); notify('start', item);
@@ -93,6 +125,7 @@ export function createLiveManager({ configFile, cameraIds, onEvent = () => {}, t
     },
     stream(request, response, { cameraId, sessionId, ownerId, loginHash, isAuthorized }) {
       const item = own(cameraId, sessionId, ownerId, loginHash);
+      const { config } = item;
       if (item.state !== 'ticket') throw new LiveError(409, 'Эта видеосессия уже открыта или завершена', 'LIVE_ALREADY_USED');
       if (!isAuthorized()) deny();
       for (const timer of item.timers) clearTimeout(timer);

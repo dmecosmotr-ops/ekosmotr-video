@@ -98,17 +98,37 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     let alive = true;
+    let timer;
+    const controller = new AbortController();
+    const options = { signal: controller.signal };
+    const dateQuery = query({ date });
+    const refreshCameras = async () => {
+      try {
+        if (!document.hidden) {
+          const data = await api(`/cameras${dateQuery}`, options);
+          if (alive) setCameras(data.cameras || []);
+        }
+      } catch {
+        // Keep the loaded list on a transient error. The API handles expired sessions.
+      } finally {
+        if (alive) timer = setTimeout(refreshCameras, 30000);
+      }
+    };
     setLoading(true); setError('');
     setStations([]); setCameras([]); setEvents([]);
-    Promise.all([api(`/stations${query({ date })}`), api(`/cameras${query({ date })}`), api(`/events${query({ date })}`)])
+    Promise.all([api(`/stations${dateQuery}`, options), api(`/cameras${dateQuery}`, options), api(`/events${dateQuery}`, options)])
       .then(([stationData, cameraData, eventData]) => {
         if (!alive) return;
         setStations(stationData.stations || []); setCameras(cameraData.cameras || []); setEvents(eventData.events || []);
         setRegion(previous => previous && !(stationData.stations || []).some(station => station.region === previous) ? '' : previous);
       }).catch(failure => { if (alive) setError(failure.message); })
-      .finally(() => { if (alive) setLoading(false); });
-    return () => { alive = false; };
-  }, [user?.id, sessionEpoch, date, version]);
+      .finally(() => {
+        if (!alive) return;
+        setLoading(false);
+        if (session?.xiaomiSyncEnabled) timer = setTimeout(refreshCameras, 30000);
+      });
+    return () => { alive = false; clearTimeout(timer); controller.abort(); };
+  }, [user?.id, sessionEpoch, date, version, session?.xiaomiSyncEnabled]);
 
   const navigate = destination => {
     if (window.location.hash === `#${destination}`) setPage(destination);
@@ -150,7 +170,7 @@ export default function App() {
     </aside>
     <div className="main-shell"><header className="topbar"><div className="topbar-start"><button className="icon-button mobile-menu" aria-label="Открыть меню" onClick={() => setMenuOpen(true)}><Menu size={22} /></button><span>Сеть ПТО</span><span className="breadcrumb-separator">/</span><strong>Видеоаналитика</strong></div><div className="topbar-right"><span className="environment-mark"><span />Пилот</span><span className="topbar-role"><ShieldCheck size={15} />{roleNames[user.role]}</span></div></header>
       <main className="main-content"><div className="page-header"><div><h1>{activePage === 'overview' ? overviewTitle : pageTitles[activePage]}</h1><p>{activePage === 'overview' ? 'Адреса, видео и результаты за выбранный день' : activePage === 'cameras' ? 'Найдите ПТО и выберите нужную камеру' : activePage === 'events' ? 'Выберите показатель, затем станцию и нужный момент' : activePage === 'users' ? 'Роли пользователей и границы их доступа' : 'Входы, права доступа и просмотры видео'}</p></div>{!['users', 'audit'].includes(activePage) && <div className="page-actions">{activePage !== 'cameras' && <label className="date-control"><CalendarDays size={17} /><span className="sr-only">Дата анализа</span><input type="date" aria-label="Дата анализа" value={date} onChange={event => event.target.value && setDate(event.target.value)} /></label>}<button className="icon-button refresh-button" onClick={() => setVersion(value => value + 1)} aria-label="Обновить данные" disabled={loading}><RefreshCw size={18} className={loading ? 'spin' : ''} /></button></div>}</div>
-        {!['users', 'audit'].includes(activePage) && <div className="data-mode-control"><div className="segmented" role="group" aria-label="Источник данных"><button type="button" className={dataMode === 'real' ? 'selected' : ''} aria-pressed={dataMode === 'real'} onClick={() => changeMode('real')}>Рабочие данные</button><button type="button" className={dataMode === 'demo' ? 'selected' : ''} aria-pressed={dataMode === 'demo'} onClick={() => changeMode('demo')}>Пример данных</button></div><p>{dataMode === 'demo' ? 'Учебные события за 30.10.2026. Это пример интерфейса, а не результаты работы ПТО.' : 'Настоящие камеры. Видеоанализ ещё не подключён; привязки по названиям требуют проверки.'}</p></div>}
+        {!['users', 'audit'].includes(activePage) && <div className="data-mode-control"><div className="segmented" role="group" aria-label="Источник данных"><button type="button" className={dataMode === 'real' ? 'selected' : ''} aria-pressed={dataMode === 'real'} onClick={() => changeMode('real')}>Рабочие данные</button><button type="button" className={dataMode === 'demo' ? 'selected' : ''} aria-pressed={dataMode === 'demo'} onClick={() => changeMode('demo')}>Пример данных</button></div><p>{dataMode === 'demo' ? 'Учебные события за 30.10.2026. Это пример интерфейса, а не результаты работы ПТО.' : 'Реальные камеры и полученные результаты. Метрики фрагмента не равны итогу дня; привязки по названиям требуют проверки.'}</p></div>}
         <ErrorNotice message={error} retry={() => setVersion(value => value + 1)} />
         {activePage === 'overview' && <Overview {...view} {...{ loading, region, setRegion, search, setSearch, date, dataMode }} currentUser={user} onStation={setSelectedStation} onNavigate={navigate} />}
         {activePage === 'cameras' && <Cameras {...view} {...{ loading, dataMode }} onCamera={openCamera} />}

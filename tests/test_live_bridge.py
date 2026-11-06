@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -11,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 BRIDGE = pathlib.Path(__file__).resolve().parents[1] / 'tools' / 'xiaomi_live_bridge.py'
+TEST_TMPDIR = pathlib.Path(os.environ.get('PILOT_TEST_TMPDIR', pathlib.Path(__file__).parent))
 
 
 class BridgeTests(unittest.TestCase):
@@ -48,7 +50,7 @@ class BridgeTests(unittest.TestCase):
         self.assertIn('frag_keyframe+empty_moov+default_base_moof', args)
 
     def test_configuration_requires_private_path_and_rejects_invalid_identifiers(self):
-        with tempfile.TemporaryDirectory(dir=pathlib.Path(__file__).parent) as directory:
+        with tempfile.TemporaryDirectory(dir=TEST_TMPDIR) as directory:
             root = pathlib.Path(directory)
             config = root / 'config.json'
             config.write_text('{}')
@@ -103,7 +105,7 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(provisioning[0]['did'], '123')
 
     def test_complete_private_configuration_accepts_classpath_directories(self):
-        with tempfile.TemporaryDirectory(dir=pathlib.Path(__file__).parent) as directory:
+        with tempfile.TemporaryDirectory(dir=TEST_TMPDIR) as directory:
             private = pathlib.Path(directory) / 'private'
             private.mkdir()
             for name in ('java', 'ffmpeg', 'go2rtc'):
@@ -119,6 +121,30 @@ class BridgeTests(unittest.TestCase):
             path = private / 'config.json'
             path.write_text(json.dumps(config), encoding='utf-8')
             self.assertEqual(self.bridge.load_config(path)['deviceId'], '123')
+            config['sharedHome'] = {'homeId': '456', 'homeOwnerId': '789'}
+            path.write_text(json.dumps(config), encoding='utf-8')
+            self.assertEqual(self.bridge.load_config(path)['sharedHome'], config['sharedHome'])
+            config['sharedHome']['homeOwnerId'] = 'not-a-provider-id'
+            path.write_text(json.dumps(config), encoding='utf-8')
+            with self.assertRaisesRegex(self.bridge.BridgeError, 'INVALID_SHARED_HOME'):
+                self.bridge.load_config(path)
+
+    def test_shared_device_lookup_uses_exact_id_and_falls_back_to_its_home(self):
+        home = {'homeId': '456', 'homeOwnerId': '789'}
+        target = {'did': '123', 'name': 'same label', 'model': 'fixture.camera.v1', 'isOnline': True}
+        duplicate = dict(target, did='124')
+        scoped = types.SimpleNamespace(
+            fetch_devices_by_id=unittest.mock.Mock(return_value=[duplicate]),
+            fetch_home_devices=unittest.mock.Mock(return_value=[duplicate, target]),
+        )
+        helper = types.SimpleNamespace(ProbeError=type('ProbeError', (Exception,), {}))
+        cloud = object()
+        with patch.object(self.bridge.importlib, 'import_module', return_value=scoped):
+            self.assertEqual(self.bridge.find_cloud_device(cloud, helper, {
+                'deviceId': '123', 'sharedHome': home,
+            }), target)
+        scoped.fetch_devices_by_id.assert_called_once_with(cloud, ['123'])
+        scoped.fetch_home_devices.assert_called_once_with(cloud, '456', '789')
 
     def test_pipeline_cleanup_reaps_encoder_before_stalled_java_once(self):
         java = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],

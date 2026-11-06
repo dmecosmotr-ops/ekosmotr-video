@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { ArrowDownLeft, ChevronLeft, ChevronRight, DoorClosed, TriangleAlert, UserRound } from 'lucide-react';
-import { buildVisits, clock, durationLabel } from './playbackHelpers.js';
-import { describeAnalysis, eventsForMetric, reviewEvents, reviewReason, vehicleCounts } from './eventsPresentation.js';
+import { buildVisits, clock, durationLabel, observedClock } from './playbackHelpers.js';
+import { describeAnalysis, eventsForMetric, reviewEvents, reviewReason, stationVehicleEvents, vehicleCounts } from './eventsPresentation.js';
 import RecordingAction from './RecordingAction.jsx';
 import './events.css';
 
@@ -13,7 +13,7 @@ export function EventsPagination({ page, pages, total, pageSize, onPage, noun = 
 export function EventMomentList({ events, cameras = [], onRecord, emptyLabel = 'Отметки за обработанный период не найдены', review = false }) {
   const cameraById = new Map(cameras.map(camera => [camera.id, camera]));
   if (!events.length) return <p className="events-empty-note">{emptyLabel}</p>;
-  return <div className="event-moments">{events.map((event, index) => <article className="event-moment" key={event.id || index}><time>{clock(event.time, true)}</time><div className="event-moment-body"><strong>{event.label || 'Наблюдение'}</strong><p>{review ? reviewReason(event) : event.description}</p>{cameras.length > 1 && <span className="event-camera-name">{cameraById.get(event.cameraId)?.name || 'Камера не определена'}</span>}{(event.needsReview || review) && <span className="badge badge-amber">Требует проверки</span>}</div><RecordingAction event={event} camera={cameraById.get(event.cameraId)} onRecord={onRecord} /></article>)}</div>;
+  return <div className="event-moments">{events.map((event, index) => <article className="event-moment" key={event.id || index}><time>{observedClock(event.time, event.timing, true)}</time><div className="event-moment-body"><strong>{event.label || 'Наблюдение'}</strong><p>{review ? reviewReason(event) : event.description}</p>{cameras.length > 1 && <span className="event-camera-name">{cameraById.get(event.cameraId)?.name || 'Камера не определена'}</span>}{(event.needsReview || review) && <span className="badge badge-amber">Требует проверки</span>}</div><RecordingAction event={event} camera={cameraById.get(event.cameraId)} onRecord={onRecord} /></article>)}</div>;
 }
 
 export function VehicleVisits({ events, date, cameras = [], onRecord, analysisSource }) {
@@ -29,7 +29,7 @@ export function VehicleVisits({ events, date, cameras = [], onRecord, analysisSo
     {!visits.length ? <p className="events-empty-note">{analysis.kind === 'none' ? analysis.label : analysis.countable ? 'За обработанный период въезды и выезды не найдены' : 'Отметки въездов и выездов не получены. Полнота анализа не подтверждена.'}</p> : <div className="event-visit-list">{visible.map((visit, index) => {
       const entry = visit.events.find(event => event.type === 'vehicle_entry');
       const exit = visit.events.find(event => event.type === 'vehicle_exit');
-      return <article className="event-visit" key={visit.id}><div className="event-visit-heading"><strong>Заезд № {currentPage * pageSize + index + 1}</strong><span>{visit.status === 'paired' ? `Время в боксе: ${durationLabel(visit.durationSeconds)}` : visit.status === 'entry_only' ? 'Выезд не сопоставлен' : 'Въезд не сопоставлен'}</span>{visit.needsReview && <span className="badge badge-amber">Требует проверки</span>}</div><div className="event-visit-points"><div><span className="event-point-label">Въезд</span><time>{clock(visit.enteredAt, true)}</time>{entry ? <RecordingAction event={entry} camera={cameraById.get(entry.cameraId)} onRecord={onRecord} /> : <span className="recording-unavailable">Нет связанного наблюдения</span>}</div><div><span className="event-point-label">Выезд</span><time>{clock(visit.exitedAt, true)}</time>{exit ? <RecordingAction event={exit} camera={cameraById.get(exit.cameraId)} onRecord={onRecord} /> : <span className="recording-unavailable">Нет связанного наблюдения</span>}</div></div>{cameras.length > 1 && <span className="event-camera-name">{cameraById.get(visit.cameraId)?.name || 'Камера не определена'}</span>}</article>;
+      return <article className="event-visit" key={visit.id}><div className="event-visit-heading"><strong>Заезд № {currentPage * pageSize + index + 1}</strong><span>{visit.status === 'paired' ? `${visit.events.some(event => event.source === 'analysis') ? 'Между отметками' : 'Время в боксе'}: ${visit.events.some(event => event.timing === 'estimated') ? '≈ ' : ''}${durationLabel(visit.durationSeconds)}` : visit.status === 'entry_only' ? 'Выезд не сопоставлен' : 'Въезд не сопоставлен'}</span>{visit.needsReview && <span className="badge badge-amber">Требует проверки</span>}</div><div className="event-visit-points"><div><span className="event-point-label">Въезд</span><time>{observedClock(visit.enteredAt, entry?.timing, true)}</time>{entry ? <RecordingAction event={entry} camera={cameraById.get(entry.cameraId)} onRecord={onRecord} /> : <span className="recording-unavailable">Нет связанного наблюдения</span>}</div><div><span className="event-point-label">Выезд</span><time>{observedClock(visit.exitedAt, exit?.timing, true)}</time>{exit ? <RecordingAction event={exit} camera={cameraById.get(exit.cameraId)} onRecord={onRecord} /> : <span className="recording-unavailable">Нет связанного наблюдения</span>}</div></div>{cameras.length > 1 && <span className="event-camera-name">{cameraById.get(visit.cameraId)?.name || 'Камера не определена'}</span>}</article>;
     })}</div>}
     <EventsPagination page={currentPage} pages={pages} total={visits.length} pageSize={pageSize} onPage={setPage} noun="заездов" />
     <p className="events-evidence-note">Пары связаны по идентификатору заезда в одной камере и за один день. Связанный заезд не подтверждает уникального клиента. Несопоставленные времена не восстанавливаются.</p>
@@ -40,13 +40,13 @@ function DetailEventSection({ title, icon: Icon, children }) {
   return <section className="events-detail-section"><h3><Icon size={17} aria-hidden="true" />{title}</h3>{children}</section>;
 }
 
-export default function EventGroups({ events = [], date, onRecord, cameras = [], analysisSource }) {
+export default function EventGroups({ events = [], date, onRecord, cameras = [], analysisSource, stationScope = false }) {
   const analysis = describeAnalysis(events, analysisSource);
   const review = reviewEvents(events, date);
   const missing = analysis.kind === 'none' ? analysis.label : analysis.countable ? 'За обработанный период отметки не найдены' : 'Отметки не получены. Полнота анализа не подтверждена.';
   return <div className="event-groups events-detail-groups"><p className={`events-analysis-state is-${analysis.kind}`}>{analysis.label}</p>
     <DetailEventSection title="Первое появление и открытие" icon={UserRound}><EventMomentList events={eventsForMetric(events, 'start', date)} cameras={cameras} onRecord={onRecord} emptyLabel={missing} /><p className="events-evidence-note">Первое появление человека в кадре не подтверждает его личность или начало работы.</p></DetailEventSection>
-    <DetailEventSection title="Автомобили" icon={ArrowDownLeft}><VehicleVisits key={date} events={events} date={date} cameras={cameras} onRecord={onRecord} analysisSource={analysisSource} /></DetailEventSection>
+    <DetailEventSection title="Автомобили" icon={ArrowDownLeft}>{stationScope && <p className="events-evidence-note">Счётчик ПТО — по основной камере, чтобы не считать один въезд дважды.</p>}<VehicleVisits key={date} events={stationScope ? stationVehicleEvents(events, cameras) : events} date={date} cameras={cameras} onRecord={onRecord} analysisSource={analysisSource} /></DetailEventSection>
     <DetailEventSection title="Закрытие" icon={DoorClosed}><EventMomentList events={eventsForMetric(events, 'closed', date)} cameras={cameras} onRecord={onRecord} emptyLabel={missing} /></DetailEventSection>
     <DetailEventSection title="Требует проверки" icon={TriangleAlert}><EventMomentList events={review} cameras={cameras} onRecord={onRecord} review emptyLabel={analysis.kind === 'none' ? 'Проверка станет доступна после анализа видео' : 'Среди полученных наблюдений нет отметок для проверки'} /></DetailEventSection>
   </div>;

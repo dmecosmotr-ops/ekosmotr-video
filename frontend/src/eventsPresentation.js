@@ -13,14 +13,16 @@ export function recordingAction(camera) {
   return { label: 'Проверить наличие записи', actionable: Boolean(camera) };
 }
 
-// The current API confirms a processed interval only for the explicit demo.
-// A real observation, a live connection or a non-empty source never proves full coverage.
+// A fragment is never proof of full-day coverage, even after actual inference.
 export function describeAnalysis(events = [], analysisSource) {
   const source = typeof analysisSource === 'object' ? analysisSource?.source : analysisSource;
   if (events.some(event => event.type === 'gap') || source === 'partial') {
     return { kind: 'partial', label: 'Данные неполные', countable: false };
   }
   if (source === 'demo') return { kind: 'analyzed', label: 'Пример анализа за день', countable: true };
+  if (source === 'analysis') return { kind: 'partial',
+    label: `Обработан фрагмент, итог дня неизвестен${analysisSource?.timing === 'estimated' || events.some(event => event.timing === 'estimated') ? '. Время приблизительное' : ''}`,
+    countable: false };
   if (events.length || source && source !== 'none') {
     return { kind: 'partial', label: 'Полнота анализа не подтверждена', countable: false };
   }
@@ -66,9 +68,16 @@ export function eventsForMetric(events, metric, date = '') {
   return reviewEvents(events, date);
 }
 
+export function stationVehicleEvents(events = [], cameras = []) {
+  const primary = new Set(cameras.filter(camera => camera.primary === true).map(camera => camera.id));
+  return events.filter(event => ['vehicle_entry', 'vehicle_exit'].includes(event.type)
+    && (event.source !== 'analysis' || primary.has(event.cameraId)));
+}
+
 export function metricStationRows(rows, metric, date = '') {
   const relevant = metric === 'review' ? rows.filter(row => eventsForMetric(row.events, metric, date).length) : [...rows];
-  return relevant.sort((a, b) => Number(Boolean(eventsForMetric(b.events, metric, date).length)) - Number(Boolean(eventsForMetric(a.events, metric, date).length)) || a.title.localeCompare(b.title, 'ru'));
+  const selected = row => metric === 'vehicles' ? row.vehicleEvents || row.events : row.events;
+  return relevant.sort((a, b) => Number(Boolean(eventsForMetric(selected(b), metric, date).length)) - Number(Boolean(eventsForMetric(selected(a), metric, date).length)) || a.title.localeCompare(b.title, 'ru'));
 }
 
 export function buildStationEventRows({ stations = [], cameras = [], events = [], date = '', search = '', manager = '', region = '' } = {}) {
@@ -88,6 +97,6 @@ export function buildStationEventRows({ stations = [], cameras = [], events = []
   return [...rows.values()].filter(row => {
     if (manager && row.station?.manager !== manager || region && row.station?.region !== region) return false;
     return !term || [row.title, row.station?.manager, row.station?.region, ...row.cameras.map(camera => camera.name)].filter(Boolean).join(' ').toLocaleLowerCase('ru').includes(term);
-  }).map(row => ({ ...row, events: orderedEvents(row.events), visits: buildVisits(row.events, date), analysis: describeAnalysis(row.events, row.station?.metrics?.source || row.cameras.find(camera => camera.metrics?.source === 'demo')?.metrics?.source) }))
+  }).map(row => ({ ...row, events: orderedEvents(row.events), vehicleEvents: stationVehicleEvents(row.events, row.cameras), visits: buildVisits(stationVehicleEvents(row.events, row.cameras), date), analysis: describeAnalysis(row.events, row.station?.metrics?.source && row.station.metrics.source !== 'none' ? row.station.metrics : row.cameras.find(camera => camera.metrics?.source && camera.metrics.source !== 'none')?.metrics) }))
     .sort((a, b) => a.title.localeCompare(b.title, 'ru'));
 }

@@ -1,0 +1,13 @@
+{
+  "resultsDir": "/video/results",
+  "archiveRoot": "/video/recordings",
+  "cameras": [{
+    "cameraId": "replace-confirmed-camera-id",
+    "stationId": "replace-confirmed-station-id",
+    "mappingVersion": "v1",
+    "timezone": "Asia/Barnaul",
+    "name": "Подтверждённая камера пилота",
+    "model": "Подтверждённая модель",
+    "primary": true
+  }]
+}

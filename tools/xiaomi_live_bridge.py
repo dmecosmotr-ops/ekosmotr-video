@@ -40,6 +40,12 @@ def load_config(path: Path) -> dict:
     for key in ('accountId', 'deviceId'):
         if not isinstance(config.get(key), str) or not re.fullmatch(r'[0-9]{1,64}', config[key]):
             raise BridgeError('INVALID_CONFIG')
+    if 'sharedHome' in config:
+        home = config['sharedHome']
+        if (not isinstance(home, dict) or set(home) != {'homeId', 'homeOwnerId'}
+                or any(not isinstance(value, str) or not re.fullmatch(r'[0-9]{1,64}', value)
+                       for value in home.values())):
+            raise BridgeError('INVALID_SHARED_HOME')
     if config.get('region') not in ('ru', 'de', 'i2', 'sg', 'us', 'cn'):
         raise BridgeError('INVALID_CONFIG')
     if not isinstance(config.get('model'), str) or not re.fullmatch(r'[a-z0-9_.-]{1,100}', config['model']):
@@ -111,23 +117,44 @@ def provision_properties(result: dict, client_public: str, client_private: str) 
     return values
 
 
+def find_cloud_device(cloud, helper, config: dict) -> dict | None:
+    device_id = config['deviceId']
+
+    def match(items):
+        return next((item for item in items if isinstance(item, dict)
+                     and str(item.get('did')) == device_id), None)
+
+    home = config.get('sharedHome')
+    if home is None:
+        return match(cloud.request('/v2/home/device_list_page', {}, 'device').get('list', []))
+
+    inventory = importlib.import_module('xiaomi_shared_inventory')
+    try:
+        device = match(inventory.fetch_devices_by_id(cloud, [device_id]))
+    except helper.ProbeError:
+        device = None
+    if device is not None:
+        return device
+    return match(inventory.fetch_home_devices(cloud, home['homeId'], home['homeOwnerId']))
+
+
 def fresh_provision(config: dict) -> dict[str, str]:
     # These paths are fixed server-side. Nothing received from a viewer selects code.
     sys.path.insert(0, config['pythonDeps'])
     sys.path.insert(0, config['cloudTools'])
     helper = importlib.import_module('xiaomi_cloud_probe')
     from nacl.public import PrivateKey
-    http = helper.BoundedHTTP(30)
+    http = helper.BoundedHTTP(45 if config.get('sharedHome') else 30)
     cloud = helper.XiaomiCloud(http, config['region'])
     token = helper.load_token(Path(config['go2rtcConfig']), config['accountId'])
     cloud.login_with_token(config['accountId'], token)
     del token
-    devices = cloud.request('/v2/home/device_list_page', {}, 'device')
-    device = next((item for item in devices.get('list', []) if isinstance(item, dict)
-                   and str(item.get('did')) == config['deviceId']), None)
+    device = find_cloud_device(cloud, helper, config)
     if device is None or device.get('model') != config['model']:
         raise BridgeError('CAMERA_NOT_FOUND')
-    if device.get('isOnline') is False:
+    online = next((device[key] for key in ('isOnline', 'is_online', 'online')
+                   if isinstance(device.get(key), bool)), None)
+    if online is False:
         raise BridgeError('CAMERA_OFFLINE')
     private_key = PrivateKey.generate()
     public_key = bytes(private_key.public_key).hex()

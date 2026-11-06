@@ -1,0 +1,90 @@
+# Explicit overlay: docker compose -f compose.yaml -f compose.video.yaml ...
+# No services below run automatically; both require profile/one-shot `run`.
+x-video-common: &video-common
+  image: ${PILOT_VIDEO_IMAGE:-ekosmotr-camera-video:review}
+  build:
+    context: .
+    dockerfile: deploy/video.Dockerfile
+  profiles: [video]
+  init: true
+  restart: "no"
+  user: "1000:1000"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 96
+  cpus: "${PILOT_VIDEO_CPUS:-2.0}"
+  mem_limit: ${PILOT_VIDEO_MEMORY_LIMIT:-2g}
+  memswap_limit: ${PILOT_VIDEO_MEMORY_LIMIT:-2g}
+  stop_grace_period: 15s
+  ulimits:
+    nofile: {soft: 1024, hard: 2048}
+    fsize: {soft: 268435456, hard: 268435456}
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=67108864,uid=1000,gid=1000,mode=1700
+    - /run/private/runtime:rw,noexec,nosuid,nodev,size=16777216,uid=1000,gid=1000,mode=0700
+  logging:
+    driver: json-file
+    options: {max-size: 2m, max-file: "2"}
+
+services:
+  camera-pilot:
+    environment:
+      PILOT_ANALYSIS_CONFIG: /run/private/video-analysis.json
+    volumes:
+      - video-archive:/video/recordings:ro
+      - video-results:/video/results:ro
+      - type: bind
+        source: ${PILOT_VIDEO_CONFIG_DIR:-./private/video-config}/cabinet-analysis.json
+        target: /run/private/video-analysis.json
+        read_only: true
+        bind: {create_host_path: false}
+    # Existing `cabinet` internal network stays unchanged and has no video egress.
+
+  video-receiver:
+    <<: *video-common
+    command: [python, -m, video.collector, --help]
+    networks: [video-egress]
+    volumes:
+      - video-archive:/video/recordings
+      - type: bind
+        source: ${PILOT_VIDEO_CONFIG_DIR:-./private/video-config}
+        target: /run/private/config
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${PILOT_VIDEO_VENDOR_DIR:-./private/video-vendor}
+        target: /opt/vendor/classes
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${PILOT_VIDEO_RELAY_DIR:-./private/video-relay}
+        target: /opt/relay
+        read_only: true
+        bind: {create_host_path: false}
+
+  video-analysis:
+    <<: *video-common
+    command: [python, -m, video.analysis, --help]
+    network_mode: none
+    volumes:
+      - video-archive:/video/recordings:ro
+      - video-results:/video/results
+      - type: bind
+        source: ${PILOT_VIDEO_CONFIG_DIR:-./private/video-config}
+        target: /run/private/config
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${PILOT_VIDEO_MODEL_DIR:-./private/video-models}
+        target: /video/models
+        read_only: true
+        bind: {create_host_path: false}
+
+volumes:
+  video-archive:
+  video-results:
+
+networks:
+  video-egress:
+    driver: bridge

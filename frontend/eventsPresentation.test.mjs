@@ -37,6 +37,28 @@ test('gaps and unconfirmed coverage cannot produce a false zero', () => {
   assert.equal(describeAnalysis([event('open', 'opened')], undefined).kind, 'partial');
 });
 
+test('real fragment analysis names the partial interval and never claims a complete day or zero', () => {
+  const state = describeAnalysis([], { source: 'analysis', coverage: 'partial', timing: 'estimated' });
+  assert.equal(state.kind, 'partial');
+  assert.match(state.label, /Обработан фрагмент/);
+  assert.match(state.label, /приблизительное/);
+  assert.equal(state.countable, false);
+  assert.equal(vehicleCounts([], state).entries, null);
+  const row = buildStationEventRows({ stations: [{ ...stations[0], metrics: { source: 'analysis', coverage: 'partial', timing: 'estimated' } }] })[0];
+  assert.match(row.analysis.label, /приблизительное/);
+});
+
+test('station vehicle counters use only the visible designated primary while retaining other observations for review', () => {
+  const cameras = [{ id: 'primary', stationId: 's2', primary: true }, { id: 'other', stationId: 's2', primary: false }];
+  const events = [event('a', 'vehicle_entry', { cameraId: 'primary', source: 'analysis' }), event('b', 'vehicle_entry', { cameraId: 'other', source: 'analysis' })];
+  const row = buildStationEventRows({ stations, cameras, events }).find(item => item.id === 's2');
+  assert.equal(row.events.length, 2);
+  assert.equal(vehicleCounts(row.vehicleEvents, row.analysis).entries, 1);
+  const hiddenPrimary = buildStationEventRows({ stations, cameras: [cameras[1]], events: [events[1]] }).find(item => item.id === 's2');
+  assert.equal(hiddenPrimary.vehicleEvents.length, 0);
+  assert.equal(vehicleCounts(hiddenPrimary.vehicleEvents, describeAnalysis([], 'analysis')).entries, null);
+});
+
 test('visit pairing preserves camera, local day and explicit visit ID boundaries', () => {
   const rows = buildStationEventRows({ stations, date: '2026-10-30', events: [
     event('entry', 'vehicle_entry', { visitId: 'v', time: '08:00' }),

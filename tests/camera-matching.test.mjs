@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { matchCamera, matchCameras } from '../backend/camera-matching.mjs';
+import { importInventory } from '../backend/inventory.mjs';
 
 const stations = JSON.parse(await readFile(new URL('../data/stations.json', import.meta.url), 'utf8'));
 const byAddress = address => {
@@ -118,4 +121,57 @@ test('does not invent an identity for a nameless or unidentified camera', () => 
   assert.equal(result.id, undefined);
   assert.equal(result.stationId, null);
   assert.equal(result.mappingStatus, 'needs_mapping');
+});
+
+async function importFixture(t, inventory) {
+  const directory = await mkdtemp(join(process.env.PILOT_TEST_TMPDIR || tmpdir(), 'camera-inventory-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, 'inventory.json');
+  await writeFile(file, JSON.stringify(inventory));
+  return importInventory(file, stations);
+}
+
+test('requires confirmation of a unique address suggestion for a newly imported camera', async t => {
+  const [result] = await importFixture(t, { version: 1, cameras: [
+    { ...camera('Оптиков'), mapping: 'confirm', deviceId: 'private-provider-id' },
+  ] });
+  assert.equal(result.stationId, null);
+  assert.equal(result.mappingStatus, 'needs_mapping');
+  assert.deepEqual(result.candidateStationIds, [optikov.id]);
+  assert.equal(Object.hasOwn(result, 'deviceId'), false);
+});
+
+test('confirms only an explicit known station in a new inventory row', async t => {
+  const [result] = await importFixture(t, { version: 1, cameras: [
+    { ...camera('Оптиков'), mapping: 'confirm', stationId: cherepanova.id },
+  ] });
+  assert.equal(result.stationId, cherepanova.id);
+  assert.equal(result.mappingStatus, 'confirmed');
+  assert.deepEqual(result.candidateStationIds, [cherepanova.id]);
+});
+
+test('fails closed for unknown station IDs and invalid confirmation modes', async t => {
+  const results = await importFixture(t, { version: 1, cameras: [
+    { ...camera('Оптиков'), id: 'unknown-station', mapping: 'confirm', stationId: 'unknown-station-id' },
+    { ...camera('Оптиков'), id: 'invalid-station', mapping: 'confirm', stationId: [optikov.id] },
+    { ...camera('Оптиков'), id: 'invalid-mode', mapping: 'other', stationId: optikov.id },
+    { ...camera('Оптиков'), id: 'missing-mode', stationId: optikov.id },
+  ] });
+  assert.equal(results.length, 4);
+  for (const result of results) {
+    assert.equal(result.stationId, null);
+    assert.equal(result.mappingStatus, 'needs_mapping');
+    assert.deepEqual(result.candidateStationIds, [optikov.id]);
+  }
+});
+
+test('preserves the old automatic match for trusted legacy rows and plain arrays', async t => {
+  for (const inventory of [
+    [camera('Оптиков')],
+    { version: 1, cameras: [{ ...camera('Оптиков'), mapping: 'legacy' }] },
+  ]) {
+    const [result] = await importFixture(t, inventory);
+    assert.equal(result.stationId, optikov.id);
+    assert.equal(result.mappingStatus, 'matched');
+  }
 });

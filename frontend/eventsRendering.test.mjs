@@ -5,10 +5,10 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
-let server, VehicleVisits, RecordingAction, Events;
+let server, VehicleVisits, RecordingAction, Events, EventGroups;
 before(async () => {
   server = await createServer({ root: fileURLToPath(new URL('.', import.meta.url)), configFile: false, server: { middlewareMode: true, hmr: false, watch: null }, optimizeDeps: { noDiscovery: true, include: [] }, appType: 'custom' });
-  ({ VehicleVisits } = await server.ssrLoadModule('/src/EventGroups.jsx'));
+  ({ VehicleVisits, default: EventGroups } = await server.ssrLoadModule('/src/EventGroups.jsx'));
   ({ default: RecordingAction } = await server.ssrLoadModule('/src/RecordingAction.jsx'));
   ({ default: Events } = await server.ssrLoadModule('/src/EventsScreen.jsx'));
 });
@@ -37,4 +37,14 @@ test('the default metric view renders a permitted station without analysis', () 
   assert.match(html, /Бийск · Перевозный, 7/);
   assert.match(html, /Видео ещё не анализировалось/);
   assert.doesNotMatch(html, /За обработанный период отметки не найдены/);
+});
+
+test('station details count primary camera only while a secondary camera keeps its own observations', () => {
+  const events = [{ ...pair[0], source: 'analysis', cameraId: 'primary' }, { ...pair[0], id: 'secondary-entry', source: 'analysis', cameraId: 'secondary' }];
+  const cameras = [{ id: 'primary', primary: true }, { id: 'secondary', primary: false }];
+  const html = renderToStaticMarkup(React.createElement(EventGroups, { stationScope: true, events, cameras, date: '2026-11-05', analysisSource: { source: 'analysis' } }));
+  assert.match(html, /Наблюдаемые въезды <strong>1<\/strong>/);
+  assert.doesNotMatch(html, /Наблюдаемые въезды <strong>2<\/strong>/);
+  const secondary = renderToStaticMarkup(React.createElement(EventGroups, { events: [events[1]], cameras: [cameras[1]], date: '2026-11-05', analysisSource: { source: 'analysis' } }));
+  assert.match(secondary, /Наблюдаемые въезды <strong>1<\/strong>/);
 });

@@ -29,3 +29,24 @@ EXPOSE 3210
 HEALTHCHECK --interval=20s --timeout=5s --start-period=15s --retries=3 \
   CMD ["node", "deploy/healthcheck.mjs"]
 CMD ["node", "backend/server.mjs"]
+
+# Opt-in runtime for the cabinet and its Xiaomi catalog synchronizer.
+FROM runtime AS xiaomi-runtime
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg openjdk-17-jdk-headless python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/xiaomi \
+    && install -d -m 0700 -o 1000 -g 1000 /var/lib/xiaomi/private/catalog /run/private/runtime \
+    && install -m 0600 -o 1000 -g 1000 /dev/null /var/lib/xiaomi/private/catalog/.volume-ready \
+    && install -d /run/private/config /run/private/session /opt/relay /opt/vendor/classes
+COPY tools/requirements-diagnostic.txt ./tools/
+RUN /opt/xiaomi/bin/pip install --no-cache-dir -r tools/requirements-diagnostic.txt
+COPY tools/xiaomi_cloud_probe.py tools/xiaomi_live_bridge.py tools/xiaomi_shared_inventory.py \
+     tools/xiaomi_cabinet_bundle.py tools/xiaomi_sync.py tools/RelayLive.java ./tools/
+COPY deploy/build-relay.sh ./deploy/
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+USER 1000:1000
+
+# A plain Docker build continues to produce the original cabinet image.
+FROM runtime AS default-runtime
