@@ -67,6 +67,7 @@ export function loadConfig(env = process.env) {
     mediaFile: env.PILOT_PROBE_MEDIA || undefined,
     inventoryFile: env.PILOT_CAMERA_INVENTORY || undefined,
     analysisConfigFile: env.PILOT_ANALYSIS_CONFIG || undefined,
+    microphoneDir: env.PILOT_MICROPHONE_DIR || undefined,
     liveConfigFile: env.PILOT_LIVE_CONFIG || undefined,
     xiaomiSyncDir: normalizeXiaomiSyncDir(env.PILOT_XIAOMI_SYNC_DIR || undefined) };
 }

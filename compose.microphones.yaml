@@ -1,0 +1,12 @@
+# Optional read-only handoff from the audio report publisher. No audio jobs run here.
+services:
+  camera-pilot:
+    environment:
+      PILOT_MICROPHONE_DIR: /var/lib/microphones-reports
+    volumes:
+      - type: bind
+        source: ${PILOT_MICROPHONE_DIR_HOST:?Set a dedicated private reports directory}
+        target: /var/lib/microphones-reports
+        read_only: true
+        bind:
+          create_host_path: false

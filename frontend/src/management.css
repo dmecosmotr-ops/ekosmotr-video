@@ -36,6 +36,10 @@
 .management-user-access-content { padding: 3px 0 10px; }
 .management-user-access-content .management-address-list { padding-left: 15px; }
 .management-users .users-table td { vertical-align: top; }
+.management-microphone-count { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
+.management-microphone-list { max-height: 220px; }
+.management-microphone-list .management-access-choice { border-radius: 0; }
+.management-microphone-list .management-access-choice + .management-access-choice { border-top: 1px solid var(--border); }
 .management-audit-heading > p { color: var(--muted); font-size: 13px; line-height: 1.7; }
 .management-audit-filters { padding: 0 24px 14px; display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; }
 .management-audit-filters label { display: flex; flex-direction: column; gap: 7px; color: #45616c; font-size: 12px; min-width: 130px; flex: 1; }

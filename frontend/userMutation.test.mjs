@@ -24,3 +24,9 @@ test('creation still sends the complete initial role and permissions', () => {
   const initial = { ...form, password: 'New-Pilot-2026!' };
   assert.deepEqual(buildUserMutation(null, initial, ['s-1'], ['c-2']), { ...initial, stationIds: ['s-1'], cameraIds: ['c-2'] });
 });
+test('clearing assigned microphone access sends only the separate grant', () => {
+  const withAssignment = { ...target, assignedMicrophoneStationIds: ['s-1', 's-3'], microphoneStationIds: ['s-1'] };
+  assert.deepEqual(buildUserMutation(withAssignment, form, target.stationIds, target.cameraIds, []), { microphoneStationIds: [] });
+  assert.deepEqual(buildUserMutation(withAssignment, form, target.stationIds, target.cameraIds, ['s-3', 's-1']), {});
+  assert.deepEqual(buildUserMutation(withAssignment, form, ['s-1'], target.cameraIds), { stationIds: ['s-1'] });
+});

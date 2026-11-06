@@ -10,6 +10,7 @@ import { importInventory, normalizeXiaomiSyncDir, startXiaomiRefresh } from './i
 import { createLiveManager, LiveError } from './live.mjs';
 import { loadAnalysisConfig, confirmedCameras, readAnalysis, analysisEvents, analysisMetrics } from './analysis.mjs';
 import { analysisPlayback, searchAnalysisArchive, exactAnalysisRecording, openAnalysisMedia, mediaRange } from './analysisArchive.mjs';
+import { microphoneSummary, openMicrophoneReport, readMicrophoneCatalog, validateMicrophoneDirectory } from './microphones.mjs';
 import { randomToken, tokenHash, hashPassword, verifyPassword, equalTokens,
   SESSION_SECONDS, cookieToken, sessionCookie, validOrigin } from './security.mjs';
 
@@ -20,7 +21,9 @@ class HTTPError extends Error {
 const fail = (status, message, code) => { throw new HTTPError(status, message, code); };
 const requireCondition = (value, status, message, code) => { if (!value) fail(status, message, code); };
 const modes = { demoDate: DEMO_DATE, mode: 'pilot' };
+const CONTENT_SECURITY_POLICY = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg',
   '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.json': 'application/json; charset=utf-8' };
 
@@ -53,8 +56,9 @@ async function bodyJSON(request) {
 
 export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
   stationFile = resolve(appRoot, 'data/stations.json'), mediaFile, inventoryFile, liveConfigFile, analysisConfigFile,
-  xiaomiSyncDir, staticDir = resolve(appRoot, 'frontend/dist'), deploymentConfig } = {}) {
+  microphoneDir, xiaomiSyncDir, staticDir = resolve(appRoot, 'frontend/dist'), deploymentConfig } = {}) {
   deploymentConfig = normalizeDeploymentConfig(deploymentConfig);
+  microphoneDir = validateMicrophoneDirectory(microphoneDir, staticDir);
   xiaomiSyncDir = normalizeXiaomiSyncDir(xiaomiSyncDir);
   const source = JSON.parse(readFileSync(stationFile, 'utf8'));
   const stations = Array.isArray(source) ? source : source.stations;
@@ -119,15 +123,28 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
 
   function effectiveUser(row) {
     const user = publicUser(row);
-    if (!user || user.role !== 'regional' || !row.delegated_by) return user;
-    const parentRow = getUserRow(row.delegated_by);
-    if (!parentRow?.active || parentRow.role !== 'director') return { ...user, stationIds: [], cameraIds: [] };
-    const parent = publicUser(parentRow);
-    const stationIds = user.stationIds.filter(id => parent.stationIds.includes(id));
-    const cameraIds = cameras.filter(camera => canCamera(user, camera) && canCamera(parent, camera)
-      && !stationIds.includes(camera.stationId)).map(camera => camera.id);
-    return { ...user, stationIds, cameraIds };
+    if (!user) return null;
+    let { stationIds, cameraIds } = user;
+    if (user.role === 'regional' && row.delegated_by) {
+      const parentRow = getUserRow(row.delegated_by);
+      if (!parentRow?.active || parentRow.role !== 'director') {
+        stationIds = [];
+        cameraIds = [];
+      } else {
+        const parent = publicUser(parentRow);
+        stationIds = stationIds.filter(id => parent.stationIds.includes(id));
+        cameraIds = cameras.filter(camera => canCamera(user, camera) && canCamera(parent, camera)
+          && !stationIds.includes(camera.stationId)).map(camera => camera.id);
+      }
+    }
+    const microphoneStationIds = user.microphoneStationIds.filter(id => stationMap.has(id)
+      && (user.role === 'admin' || stationIds.includes(id)));
+    return { ...user, stationIds, cameraIds, microphoneStationIds };
   }
+
+  const managedUser = (actor, row) => ({ ...effectiveUser(row), ...(actor.role === 'admin' && {
+    assignedMicrophoneStationIds: publicUser(row).microphoneStationIds,
+  }) });
 
   function currentSession(request) {
     const token = cookieToken(request);
@@ -167,6 +184,11 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
     const active = body.active ?? base.active ?? true;
     const stationIds = body.stationIds ?? base.stationIds ?? [];
     const cameraIds = body.cameraIds ?? base.cameraIds ?? [];
+    const storedMicrophoneIds = publicUser(existing)?.microphoneStationIds ?? [];
+    const setsMicrophoneIds = Object.hasOwn(body, 'microphoneStationIds');
+    const microphoneStationIds = setsMicrophoneIds ? body.microphoneStationIds : storedMicrophoneIds;
+    requireCondition(!setsMicrophoneIds || actor.role === 'admin', 403,
+      'Доступ к микрофонам назначает администратор', 'MICROPHONES_GRANT_FORBIDDEN');
     requireCondition(typeof name === 'string' && name.trim().length >= 2 && name.length <= 120
       && !/[\x00-\x1f]/.test(name), 400, 'Укажите имя от 2 до 120 символов', 'INVALID_NAME');
     requireCondition(typeof email === 'string' && email.length <= 254
@@ -181,6 +203,13 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
       400, 'В доступах указана неизвестная камера', 'INVALID_CAMERAS');
     requireCondition(role === 'admin' || cameraIds.every(id => cameraMap.get(id).stationId !== null),
       403, 'Непривязанные камеры доступны только администратору', 'UNMAPPED_ADMIN_ONLY');
+    if (setsMicrophoneIds) {
+      requireCondition(Array.isArray(microphoneStationIds) && microphoneStationIds.length <= 1000
+        && microphoneStationIds.every(id => typeof id === 'string' && (stationMap.has(id) || storedMicrophoneIds.includes(id))),
+      400, 'В доступах к микрофонам указана неизвестная станция', 'INVALID_MICROPHONE_STATIONS');
+      requireCondition(role === 'admin' || microphoneStationIds.every(id => stationIds.includes(id) || storedMicrophoneIds.includes(id)),
+        400, 'Доступ к микрофонам назначается только для доступных ПТО', 'INVALID_MICROPHONE_SCOPE');
+    }
     if (actor.role === 'director') {
       requireCondition(role === 'regional', 403, 'Директор может создавать только региональные доступы', 'ROLE_ESCALATION');
       requireCondition(grantWithin(actor, { stationIds, cameraIds }),
@@ -191,7 +220,8 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
         400, 'Пароль должен содержать от 10 до 200 символов', 'INVALID_PASSWORD');
     }
     return { name: name.trim(), email, role, active,
-      stationIds: [...new Set(stationIds)], cameraIds: [...new Set(cameraIds)] };
+      stationIds: [...new Set(stationIds)], cameraIds: [...new Set(cameraIds)],
+      microphoneStationIds: [...new Set(microphoneStationIds)] };
   }
 
   function serveMedia(request, response, user, id) {
@@ -233,9 +263,32 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
     const runs = readAnalysis(analysisConfig).filter(run => run.cameraId === cameraId);
     const opened = openAnalysisMedia(runs, cameraId, recordingId);
     requireCondition(opened, 404, 'Запись недоступна', 'MEDIA_UNAVAILABLE');
+    return streamProtectedFile(request, response, session, opened, { 'Content-Type': 'video/mp4' },
+      current => canCamera(current, cameraMap.get(cameraId)));
+  }
+
+  function microphoneCatalogFor(user) {
+    requireCondition(user.microphoneStationIds.length, 403, 'Нет доступа к разделу «Микрофоны»', 'MICROPHONES_FORBIDDEN');
+    const catalog = readMicrophoneCatalog(microphoneDir, stationMap, deploymentConfig.mode === 'local');
+    requireCondition(catalog, 503, 'Каталог отчётов по микрофонам недоступен', 'MICROPHONES_CATALOG_UNAVAILABLE');
+    return catalog;
+  }
+
+  function serveMicrophonePdf(request, response, session, reportId) {
+    const catalog = microphoneCatalogFor(session.user);
+    const shift = catalog.shifts.find(row => row.id === reportId && session.user.microphoneStationIds.includes(row.stationId));
+    const opened = openMicrophoneReport(microphoneDir, shift);
+    requireCondition(opened, 404, 'Отчёт недоступен', 'MICROPHONE_REPORT_UNAVAILABLE');
+    return streamProtectedFile(request, response, session, opened, {
+      'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="shift-report.pdf"',
+      'Cross-Origin-Resource-Policy': 'same-origin',
+    }, current => current.microphoneStationIds.includes(shift.stationId));
+  }
+
+  function streamProtectedFile(request, response, session, opened, fileHeaders, stillAllowed) {
     const range = mediaRange(request.headers.range, opened.size);
     if (!range) { opened.close(); response.writeHead(416, { 'Content-Range': `bytes */${opened.size}`, 'Cache-Control': 'no-store' }); response.end(); return; }
-    const headers = { 'Content-Type': 'video/mp4', 'Accept-Ranges': 'bytes',
+    const headers = { ...fileHeaders, 'Accept-Ranges': 'bytes',
       'Content-Length': range.end - range.start + 1, 'Cache-Control': 'no-store' };
     if (range.status === 206) headers['Content-Range'] = `bytes ${range.start}-${range.end}/${opened.size}`;
     response.writeHead(range.status, headers);
@@ -253,7 +306,7 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
     timer = setInterval(() => {
       if (closed) { active.stop(); return; }
       const current = currentSession(request);
-      if (!current || current.hash !== session.hash || !canCamera(current.user, cameraMap.get(cameraId))) response.destroy();
+      if (!current || current.hash !== session.hash || !stillAllowed(current.user)) response.destroy();
     }, 1000);
     timer.unref();
     stream.on('error', () => response.destroy());
@@ -285,7 +338,7 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('X-Frame-Options', 'DENY');
     response.setHeader('Referrer-Policy', 'no-referrer');
-    response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+    response.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
     requireCondition(!closed, 503, 'Сервис перезапускается', 'CLOSED');
     requireCondition(validOrigin(request, deploymentConfig), 403, 'Источник запроса не разрешён', 'ORIGIN_FORBIDDEN');
     const rawPath = String(request.url || '/').split('?')[0];
@@ -340,6 +393,18 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
       audit(user, 'Выход из сервиса', user.name);
       return respond(response, 200, { ok: true }, { 'Set-Cookie': sessionCookie('', true, deploymentConfig.secureCookies) });
     }
+    if (pathname === '/api/microphones' && request.method === 'GET') {
+      const catalog = microphoneCatalogFor(user);
+      const from = url.searchParams.get('from'), to = url.searchParams.get('to');
+      requireCondition((from === null || validDate(from)) && (to === null || validDate(to)) && (!from || !to || from <= to),
+        400, 'Укажите корректный период', 'INVALID_DATE_RANGE');
+      const permittedStations = stations.filter(station => user.microphoneStationIds.includes(station.id));
+      return respond(response, 200, microphoneSummary(microphoneDir, catalog, permittedStations,
+        { from, to, region: url.searchParams.get('region'), stationId: url.searchParams.get('stationId') }));
+    }
+    const microphonePdfMatch = /^\/api\/microphones\/reports\/([^/]+)\/pdf$/.exec(pathname);
+    if (microphonePdfMatch && ['GET', 'HEAD'].includes(request.method))
+      return serveMicrophonePdf(request, response, session, microphonePdfMatch[1]);
     if (pathname === '/api/stations' && request.method === 'GET') {
       const date = checkDate(url), allowedCameras = visibleCameras(user);
       const runs = readAnalysis(analysisConfig).filter(run => allowedCameras.some(c => c.id === run.cameraId));
@@ -450,7 +515,7 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
     if (pathname === '/api/users' && request.method === 'GET') {
       requireCondition(user.role !== 'regional', 403, 'Нет прав управления пользователями', 'USERS_FORBIDDEN');
       const rows = db.prepare('SELECT * FROM users ORDER BY created_at,name').all();
-      return respond(response, 200, { users: rows.filter(row => canManage(user, row)).map(effectiveUser) });
+      return respond(response, 200, { users: rows.filter(row => canManage(user, row)).map(row => managedUser(user, row)) });
     }
     if (pathname === '/api/users' && request.method === 'POST') {
       requireCondition(user.role !== 'regional', 403, 'Нет прав управления пользователями', 'USERS_FORBIDDEN');
@@ -459,12 +524,13 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
         409, 'Пользователь с таким email уже существует', 'EMAIL_EXISTS');
       const id = randomUUID(), { salt, hash } = hashPassword(body.password);
       insert.run(id, data.name, data.email, salt, hash, data.role,
-        JSON.stringify(data.stationIds), JSON.stringify(data.cameraIds), actor.id, new Date().toISOString());
+        JSON.stringify(data.stationIds), JSON.stringify(data.cameraIds), actor.id, new Date().toISOString(),
+        JSON.stringify(data.microphoneStationIds));
       if (actor.role === 'director') db.prepare('UPDATE users SET delegated_by=? WHERE id=?').run(actor.id, id);
       if (!data.active) db.prepare('UPDATE users SET active=0 WHERE id=?').run(id);
       audit(actor, 'Создан пользователь', data.name, JSON.stringify({ role: data.role,
-        stations: data.stationIds.length, cameras: data.cameraIds.length }));
-      return respond(response, 201, { user: effectiveUser(getUserRow(id)) });
+        stations: data.stationIds.length, cameras: data.cameraIds.length, microphones: data.microphoneStationIds.length }));
+      return respond(response, 201, { user: managedUser(actor, getUserRow(id)) });
     }
     const userMatch = /^\/api\/users\/([^/]+)$/.exec(pathname);
     if (userMatch && request.method === 'PATCH') {
@@ -482,6 +548,7 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
         && [...left].sort().every((value, index) => value === [...right].sort()[index]);
       const grantsChanged = data.role !== row.role || !sameSet(data.stationIds, before.stationIds)
         || !sameSet(data.cameraIds, before.cameraIds);
+      const microphoneGrantsChanged = !sameSet(data.microphoneStationIds, publicUser(row).microphoneStationIds);
       const duplicate = db.prepare('SELECT id FROM users WHERE email=? AND id<>?').get(data.email, row.id);
       requireCondition(!duplicate, 409, 'Пользователь с таким email уже существует', 'EMAIL_EXISTS');
       if (row.role === 'admin' && row.active && (data.role !== 'admin' || !data.active)) {
@@ -490,17 +557,19 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
       }
       let salt = row.password_salt, hash = row.password_hash;
       if (body.password !== undefined) ({ salt, hash } = hashPassword(body.password));
-      db.prepare(`UPDATE users SET name=?,email=?,role=?,active=?,station_ids=?,camera_ids=?,password_salt=?,password_hash=? WHERE id=?`)
+      db.prepare(`UPDATE users SET name=?,email=?,role=?,active=?,station_ids=?,camera_ids=?,microphone_station_ids=?,password_salt=?,password_hash=? WHERE id=?`)
         .run(data.name, data.email, data.role, data.active ? 1 : 0,
           grantsChanged ? JSON.stringify(data.stationIds) : row.station_ids,
-          grantsChanged ? JSON.stringify(data.cameraIds) : row.camera_ids, salt, hash, row.id);
+          grantsChanged ? JSON.stringify(data.cameraIds) : row.camera_ids,
+          microphoneGrantsChanged ? JSON.stringify(data.microphoneStationIds) : row.microphone_station_ids, salt, hash, row.id);
       if (actor.role === 'admin' && grantsChanged)
         db.prepare('UPDATE users SET delegated_by=NULL WHERE id=?').run(row.id);
       if (!data.active || body.password !== undefined || row.role !== data.role)
         db.prepare('DELETE FROM sessions WHERE user_id=?').run(row.id);
-      audit(actor, grantsChanged ? 'Изменены права пользователя' : 'Изменён пользователь', data.name, JSON.stringify({ role: data.role, active: data.active,
-        stations: data.stationIds.length, cameras: data.cameraIds.length }));
-      return respond(response, 200, { user: effectiveUser(getUserRow(row.id)) });
+      audit(actor, grantsChanged || microphoneGrantsChanged ? 'Изменены права пользователя' : 'Изменён пользователь', data.name,
+        JSON.stringify({ role: data.role, active: data.active, stations: data.stationIds.length, cameras: data.cameraIds.length,
+          ...(actor.role === 'admin' && { microphones: data.microphoneStationIds.length }) }));
+      return respond(response, 200, { user: managedUser(actor, getUserRow(row.id)) });
     }
     if (pathname === '/api/audit' && request.method === 'GET') {
       requireCondition(user.role !== 'regional', 403, 'Нет доступа к журналу управления', 'AUDIT_FORBIDDEN');
