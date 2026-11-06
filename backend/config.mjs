@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isIP } from 'node:net';
 import { hashPassword } from './security.mjs';
+import { normalizeXiaomiSyncDir } from './inventory.mjs';
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const validated = new WeakMap();
@@ -66,5 +67,6 @@ export function loadConfig(env = process.env) {
     mediaFile: env.PILOT_PROBE_MEDIA || undefined,
     inventoryFile: env.PILOT_CAMERA_INVENTORY || undefined,
     analysisConfigFile: env.PILOT_ANALYSIS_CONFIG || undefined,
-    liveConfigFile: env.PILOT_LIVE_CONFIG || undefined };
+    liveConfigFile: env.PILOT_LIVE_CONFIG || undefined,
+    xiaomiSyncDir: normalizeXiaomiSyncDir(env.PILOT_XIAOMI_SYNC_DIR || undefined) };
 }

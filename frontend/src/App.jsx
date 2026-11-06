@@ -98,17 +98,37 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     let alive = true;
+    let timer;
+    const controller = new AbortController();
+    const options = { signal: controller.signal };
+    const dateQuery = query({ date });
+    const refreshCameras = async () => {
+      try {
+        if (!document.hidden) {
+          const data = await api(`/cameras${dateQuery}`, options);
+          if (alive) setCameras(data.cameras || []);
+        }
+      } catch {
+        // Keep the loaded list on a transient error. The API handles expired sessions.
+      } finally {
+        if (alive) timer = setTimeout(refreshCameras, 30000);
+      }
+    };
     setLoading(true); setError('');
     setStations([]); setCameras([]); setEvents([]);
-    Promise.all([api(`/stations${query({ date })}`), api(`/cameras${query({ date })}`), api(`/events${query({ date })}`)])
+    Promise.all([api(`/stations${dateQuery}`, options), api(`/cameras${dateQuery}`, options), api(`/events${dateQuery}`, options)])
       .then(([stationData, cameraData, eventData]) => {
         if (!alive) return;
         setStations(stationData.stations || []); setCameras(cameraData.cameras || []); setEvents(eventData.events || []);
         setRegion(previous => previous && !(stationData.stations || []).some(station => station.region === previous) ? '' : previous);
       }).catch(failure => { if (alive) setError(failure.message); })
-      .finally(() => { if (alive) setLoading(false); });
-    return () => { alive = false; };
-  }, [user?.id, sessionEpoch, date, version]);
+      .finally(() => {
+        if (!alive) return;
+        setLoading(false);
+        if (session?.xiaomiSyncEnabled) timer = setTimeout(refreshCameras, 30000);
+      });
+    return () => { alive = false; clearTimeout(timer); controller.abort(); };
+  }, [user?.id, sessionEpoch, date, version, session?.xiaomiSyncEnabled]);
 
   const navigate = destination => {
     if (window.location.hash === `#${destination}`) setPage(destination);

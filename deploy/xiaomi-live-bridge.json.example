@@ -1,0 +1,14 @@
+{
+  "accountId": "REPLACE_WITH_PRIVATE_ACCOUNT_ID",
+  "deviceId": "1",
+  "region": "ru",
+  "model": "xiaomi.camera.placeholder",
+  "go2rtcConfig": "/run/private/session/go2rtc.yaml",
+  "java": "/usr/bin/java",
+  "ffmpeg": "/usr/bin/ffmpeg",
+  "cloudTools": "/app/tools",
+  "pythonDeps": "/opt/xiaomi/lib/python3.11/site-packages",
+  "privateRoot": "/run/private/runtime",
+  "javaClasses": "/opt/relay:/opt/vendor/classes",
+  "maxSeconds": 300
+}

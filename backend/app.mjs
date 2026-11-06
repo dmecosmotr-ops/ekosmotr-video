@@ -6,7 +6,7 @@ import { openStore, publicUser } from './store.mjs';
 import { normalizeDeploymentConfig } from './config.mjs';
 import { makeDemo, DEMO_DATE, aggregateMetrics, noneMetrics, buildVisits } from './demo.mjs';
 import { hasProbeMedia, validDate, timeSeconds, playbackState, archiveSearch } from './playback.mjs';
-import { importInventory } from './inventory.mjs';
+import { importInventory, normalizeXiaomiSyncDir, startXiaomiRefresh } from './inventory.mjs';
 import { createLiveManager, LiveError } from './live.mjs';
 import { loadAnalysisConfig, confirmedCameras, readAnalysis, analysisEvents, analysisMetrics } from './analysis.mjs';
 import { analysisPlayback, searchAnalysisArchive, exactAnalysisRecording, openAnalysisMedia, mediaRange } from './analysisArchive.mjs';
@@ -53,22 +53,22 @@ async function bodyJSON(request) {
 
 export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
   stationFile = resolve(appRoot, 'data/stations.json'), mediaFile, inventoryFile, liveConfigFile, analysisConfigFile,
-  staticDir = resolve(appRoot, 'frontend/dist'), deploymentConfig } = {}) {
+  xiaomiSyncDir, staticDir = resolve(appRoot, 'frontend/dist'), deploymentConfig } = {}) {
   deploymentConfig = normalizeDeploymentConfig(deploymentConfig);
+  xiaomiSyncDir = normalizeXiaomiSyncDir(xiaomiSyncDir);
   const source = JSON.parse(readFileSync(stationFile, 'utf8'));
   const stations = Array.isArray(source) ? source : source.stations;
   if (!Array.isArray(stations) || !stations.length || new Set(stations.map(s => s.id)).size !== stations.length)
     throw new Error('Station source is missing or invalid');
   const stationMap = new Map(stations.map(s => [s.id, s]));
-  const { cameras, events } = makeDemo(stations);
-  cameras.push(...importInventory(inventoryFile, stations, cameras.map(camera => camera.id)));
-  const analysisConfig = loadAnalysisConfig(analysisConfigFile, stations, cameras);
-  for (const camera of confirmedCameras(analysisConfig)) {
-    const index = cameras.findIndex(existing => existing.id === camera.id);
-    if (index >= 0) cameras[index] = camera;
-    else cameras.push(camera);
-  }
-  const cameraMap = new Map(cameras.map(c => [c.id, c]));
+  const { cameras: builtInCameras, events } = makeDemo(stations);
+  const reservedIds = builtInCameras.map(camera => camera.id);
+  const previousInventory = importInventory(inventoryFile, stations, reservedIds);
+  const analysisConfig = loadAnalysisConfig(analysisConfigFile, stations, [...builtInCameras, ...previousInventory]);
+  const analysisCameras = confirmedCameras(analysisConfig);
+  const catalogMap = inventory => new Map([...builtInCameras, ...inventory, ...analysisCameras].map(camera => [camera.id, camera]));
+  let cameraMap = catalogMap(previousInventory);
+  let cameras = [...cameraMap.values()];
   const { db, audit, insert } = openStore(dbPath, stations, cameras.filter(c => c.status === 'demo').map(c => c.stationId), deploymentConfig);
   const getUserRow = id => db.prepare('SELECT * FROM users WHERE id=?').get(id);
   const dummyPassword = hashPassword(randomToken());
@@ -98,6 +98,12 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
       audit(row && publicUser(row), action === 'start' ? 'Запрошен онлайн-просмотр' : 'Остановлен онлайн-просмотр',
         cameraMap.get(cameraId)?.name || 'Камера', action === 'stop' ? JSON.stringify({ reason }) : '');
     } });
+  const xiaomiRefresh = startXiaomiRefresh({ root: xiaomiSyncDir, db, stations, reservedIds, previousInventory, analysisCameras,
+    replace(inventory, routes, revoked) {
+      cameraMap = catalogMap(inventory);
+      cameras = [...cameraMap.values()];
+      live.replaceRoutes(routes, revoked);
+    } });
 
   const canCamera = (user, camera) => Boolean(camera && (user.role === 'admin'
     || (camera.stationId !== null && (user.stationIds.includes(camera.stationId) || user.cameraIds.includes(camera.id)))));
@@ -109,7 +115,7 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
   const canManage = (actor, row) => actor.role === 'admin' || (actor.role === 'director'
     && row.role === 'regional' && row.created_by === actor.id && row.delegated_by === actor.id);
   const state = session => ({ user: session?.user || null, csrfToken: session?.csrf || null, ...modes,
-    demoLoginAvailable: deploymentConfig.demoLoginAvailable });
+    demoLoginAvailable: deploymentConfig.demoLoginAvailable, ...(xiaomiRefresh && { xiaomiSyncEnabled: true }) });
 
   function effectiveUser(row) {
     const user = publicUser(row);
@@ -135,6 +141,15 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
       return null;
     }
     return { user: effectiveUser(userRow), csrf: row.csrf, hash };
+  }
+
+  function currentManager(request, session) {
+    // A request body may still be arriving when synchronization revokes a grant.
+    xiaomiRefresh?.refresh();
+    const current = currentSession(request);
+    requireCondition(current?.hash === session.hash, 401, 'Войдите в сервис', 'AUTH_REQUIRED');
+    requireCondition(current.user.role !== 'regional', 403, 'Нет прав управления пользователями', 'USERS_FORBIDDEN');
+    return current.user;
   }
 
   function checkDate(url) {
@@ -238,7 +253,7 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
     timer = setInterval(() => {
       if (closed) { active.stop(); return; }
       const current = currentSession(request);
-      if (!current || current.hash !== session.hash || !canCamera(current.user, camera)) response.destroy();
+      if (!current || current.hash !== session.hash || !canCamera(current.user, cameraMap.get(cameraId))) response.destroy();
     }, 1000);
     timer.unref();
     stream.on('error', () => response.destroy());
@@ -283,6 +298,7 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
     if (!pathname.startsWith('/api/')) return serveStatic(request, response, decodeURIComponent(pathname));
     response.setHeader('Cache-Control', 'no-store');
     if (pathname === '/api/health' && request.method === 'GET') return respond(response, 200, { ok: true, mode: 'pilot' });
+    xiaomiRefresh?.refresh();
     const session = currentSession(request);
     if (pathname === '/api/session' && request.method === 'GET') return respond(response, 200, state(session));
     if (pathname === '/api/login' && request.method === 'POST') {
@@ -391,7 +407,7 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
       return live.stream(request, response, { cameraId: camera.id, sessionId: liveSession[2],
         ownerId: user.id, loginHash: session.hash, isAuthorized: () => {
           const now = currentSession(request);
-          return Boolean(now && now.hash === session.hash && now.user.id === user.id && canCamera(now.user, camera));
+          return Boolean(now && now.hash === session.hash && now.user.id === user.id && canCamera(now.user, cameraMap.get(camera.id)));
         } });
     }
     if (pathname === '/api/archive' && request.method === 'GET') {
@@ -438,24 +454,29 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
     }
     if (pathname === '/api/users' && request.method === 'POST') {
       requireCondition(user.role !== 'regional', 403, 'Нет прав управления пользователями', 'USERS_FORBIDDEN');
-      const body = await bodyJSON(request), data = validateUserInput(body, user);
+      const body = await bodyJSON(request), actor = currentManager(request, session), data = validateUserInput(body, actor);
       requireCondition(!db.prepare('SELECT id FROM users WHERE email=?').get(data.email),
         409, 'Пользователь с таким email уже существует', 'EMAIL_EXISTS');
       const id = randomUUID(), { salt, hash } = hashPassword(body.password);
       insert.run(id, data.name, data.email, salt, hash, data.role,
-        JSON.stringify(data.stationIds), JSON.stringify(data.cameraIds), user.id, new Date().toISOString());
-      if (user.role === 'director') db.prepare('UPDATE users SET delegated_by=? WHERE id=?').run(user.id, id);
+        JSON.stringify(data.stationIds), JSON.stringify(data.cameraIds), actor.id, new Date().toISOString());
+      if (actor.role === 'director') db.prepare('UPDATE users SET delegated_by=? WHERE id=?').run(actor.id, id);
       if (!data.active) db.prepare('UPDATE users SET active=0 WHERE id=?').run(id);
-      audit(user, 'Создан пользователь', data.name, JSON.stringify({ role: data.role,
+      audit(actor, 'Создан пользователь', data.name, JSON.stringify({ role: data.role,
         stations: data.stationIds.length, cameras: data.cameraIds.length }));
       return respond(response, 201, { user: effectiveUser(getUserRow(id)) });
     }
     const userMatch = /^\/api\/users\/([^/]+)$/.exec(pathname);
     if (userMatch && request.method === 'PATCH') {
       requireCondition(user.role !== 'regional', 403, 'Нет прав управления пользователями', 'USERS_FORBIDDEN');
-      const row = getUserRow(userMatch[1]);
-      requireCondition(row && canManage(user, row), 403, 'Нет прав изменения этого пользователя', 'USER_FORBIDDEN');
-      const body = await bodyJSON(request), data = validateUserInput(body, user, row);
+      const allowed = actor => {
+        const row = getUserRow(userMatch[1]);
+        requireCondition(row && canManage(actor, row), 403, 'Нет прав изменения этого пользователя', 'USER_FORBIDDEN');
+        return row;
+      };
+      allowed(user);
+      const body = await bodyJSON(request), actor = currentManager(request, session), row = allowed(actor);
+      const data = validateUserInput(body, actor, row);
       const before = effectiveUser(row);
       const sameSet = (left, right) => left.length === right.length
         && [...left].sort().every((value, index) => value === [...right].sort()[index]);
@@ -473,11 +494,11 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
         .run(data.name, data.email, data.role, data.active ? 1 : 0,
           grantsChanged ? JSON.stringify(data.stationIds) : row.station_ids,
           grantsChanged ? JSON.stringify(data.cameraIds) : row.camera_ids, salt, hash, row.id);
-      if (user.role === 'admin' && grantsChanged)
+      if (actor.role === 'admin' && grantsChanged)
         db.prepare('UPDATE users SET delegated_by=NULL WHERE id=?').run(row.id);
       if (!data.active || body.password !== undefined || row.role !== data.role)
         db.prepare('DELETE FROM sessions WHERE user_id=?').run(row.id);
-      audit(user, grantsChanged ? 'Изменены права пользователя' : 'Изменён пользователь', data.name, JSON.stringify({ role: data.role, active: data.active,
+      audit(actor, grantsChanged ? 'Изменены права пользователя' : 'Изменён пользователь', data.name, JSON.stringify({ role: data.role, active: data.active,
         stations: data.stationIds.length, cameras: data.cameraIds.length }));
       return respond(response, 200, { user: effectiveUser(getUserRow(row.id)) });
     }
@@ -498,6 +519,7 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
   handler.close = () => {
     if (!closed) {
       closed = true;
+      xiaomiRefresh?.close();
       const active = [...archiveStreams];
       for (const stream of active) stream.stop();
       closePromise = Promise.all([live.close(), ...active.map(stream => stream.done)]).then(() => undefined);

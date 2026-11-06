@@ -45,6 +45,23 @@ jobs:
         run: docker build --pull --tag camera-pilot-ci:${{ github.sha }} .
       - name: Start disposable container and verify auth
         run: bash deploy/container-smoke.sh camera-pilot-ci:${{ github.sha }}
+      - name: Validate optional Xiaomi Compose settings
+        env:
+          PILOT_PUBLIC_ORIGIN: https://cameras.example.invalid
+          PILOT_ADMIN_EMAIL: review@example.invalid
+          PILOT_ADMIN_PASSWORD_FILE_HOST: /tmp/camera-xiaomi-ci-bootstrap.txt
+        run: docker compose -f compose.yaml -f compose.xiaomi.yaml config --quiet
+      - name: Build optional Xiaomi runtime
+        run: docker build --target xiaomi-runtime --tag camera-xiaomi-ci:${{ github.sha }} .
+      - name: Check optional Xiaomi runtime offline
+        run: >-
+          docker run --rm --network none --read-only --cap-drop ALL
+          --security-opt no-new-privileges
+          --mount type=volume,destination=/var/lib/xiaomi/private/catalog
+          camera-xiaomi-ci:${{ github.sha }} /bin/sh -ec
+          'test "$(id -u)" = 1000; test -w /var/lib/xiaomi/private/catalog;
+          /opt/xiaomi/bin/python tools/xiaomi_sync.py --help;
+          /opt/xiaomi/bin/python -c "import yaml, nacl.public"; java -version; ffmpeg -version'
 
   video-runtime:
     runs-on: ubuntu-24.04

@@ -13,7 +13,7 @@ COPY video/requirements.txt /app/video/requirements.txt
 COPY tools/requirements-diagnostic.txt /app/tools/requirements-diagnostic.txt
 RUN pip install --no-cache-dir -r video/requirements.txt -r tools/requirements-diagnostic.txt
 COPY video/*.py /app/video/
-COPY tools/xiaomi_live_bridge.py tools/xiaomi_cloud_probe.py tools/RelayLive.java /app/tools/
+COPY tools/xiaomi_live_bridge.py tools/xiaomi_cloud_probe.py tools/xiaomi_shared_inventory.py tools/xiaomi_cabinet_bundle.py tools/xiaomi_sync.py tools/RelayLive.java /app/tools/
 COPY deploy/video-preflight.py deploy/build-relay.sh /app/deploy/
 COPY docs/YOLOX_LICENSE.txt /app/docs/YOLOX_LICENSE.txt
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HOME=/tmp

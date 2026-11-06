@@ -13,7 +13,7 @@ const sourcePaths = [
   /^deploy\/[\w.-]+\.(?:mjs|sh|py|md|example)$/, /^data\/(?:stations\.json|SOURCE\.md)$/,
   /^\.github\/workflows\/ci\.yml$/, /^[A-Z][A-Z0-9_]*\.md$/,
   /^deploy\/video\.Dockerfile$/,
-  /^(?:\.gitignore|\.gitattributes|\.dockerignore|\.env\.example|Dockerfile|compose(?:\.video)?\.yaml|package\.json|[\w-]+\.ps1)$/,
+  /^(?:\.gitignore|\.gitattributes|\.dockerignore|\.env\.example|Dockerfile|compose(?:\.(?:video|xiaomi))?\.yaml|package\.json|[\w-]+\.ps1)$/,
 ];
 const highConfidenceSecrets = [
   [/\bgh[pousr]_[A-Za-z0-9]{25,}\b/, 'GitHub token'],

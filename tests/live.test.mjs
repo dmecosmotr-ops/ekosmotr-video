@@ -18,6 +18,7 @@ const stations = Array.from({ length: 12 }, (_, i) => ({ id: `station-${i + 1}`,
 async function fixture(options = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), 'camera-pilot-live-'));
   const stationFile = path.join(dir, 'stations.json'), marker = path.join(dir, 'stopped.txt');
+  const inventoryFile = path.join(dir, 'inventory.json');
   const program = path.join(dir, 'bridge.mjs'), liveConfigFile = path.join(dir, 'live.json');
   await writeFile(stationFile, JSON.stringify(stations));
   // A subprocess fixture exercises actual stdout, disconnect and STOP cleanup. Never a real camera.
@@ -26,14 +27,19 @@ const marker=process.argv[2];let done=false;
 const stop=()=>{if(done)return;done=true;setTimeout(()=>{writeFileSync(marker,'stopped');process.exit(0)},${options.cleanupDelayMs || 0})};
 process.stdin.on('data',b=>{if(b.toString().includes('STOP'))stop()});
 process.on('SIGTERM',stop);
-${options.empty ? '' : "setInterval(()=>process.stdout.write(Buffer.from('synthetic-fmp4-bytes')),30);"}
+${options.empty ? '' : "setInterval(()=>process.stdout.write(Buffer.from(process.argv[3] || 'synthetic-fmp4-bytes')),30);"}
 setInterval(()=>{},1000);
 `);
   const config = { cameraId: 'probe-c300', command: process.execPath, args: [program, marker], cwd: dir,
     maxDurationSeconds: options.duration || 10, startupTimeoutMs: options.empty ? 100 : 1000,
     stallTimeoutMs: 1000 };
-  if (options.config !== false) await writeFile(liveConfigFile, JSON.stringify({ ...config, ...options.config }));
+  if (options.routes) {
+    await writeFile(inventoryFile, JSON.stringify([{ id: 'camera-two', name: 'Тестовая камера', model: 'test.camera.001' }]));
+  }
+  if (options.config !== false) await writeFile(liveConfigFile, JSON.stringify(
+    options.routes ? { cameras: options.routes(config) } : { ...config, ...options.config }));
   const app = createApp({ dbPath: path.join(dir, 'pilot.sqlite'), stationFile,
+    inventoryFile: options.routes ? inventoryFile : undefined,
     liveConfigFile: options.config === false ? undefined : liveConfigFile });
   const server = createServer(app);
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -49,7 +55,7 @@ setInterval(()=>{},1000);
     assert.equal(result.status, 200);
     return { ...result.body, cookie: result.headers.get('set-cookie').split(';')[0] };
   };
-  const start = session => request('/api/cameras/probe-c300/live', session, { method: 'POST' });
+  const start = (session, cameraId = 'probe-c300') => request(`/api/cameras/${cameraId}/live`, session, { method: 'POST' });
   const stopped = async () => { for (let i = 0; i < 60; i++) { try { return await readFile(marker, 'utf8'); } catch {} await delay(30); } return null; };
   return { app, server, request, raw, login, start, stopped, liveConfigFile, async close() {
     await app.close(); server.closeAllConnections();
@@ -90,6 +96,53 @@ test('only configured camera advertises live and disabled configuration stays un
   await using({ config: false }, async f => {
     const admin = await f.login(); assert.equal((await f.start(admin)).status, 503);
   });
+});
+
+test('multiple live routes use the selected camera bridge and keep one shared slot', async () => using({
+  routes: config => [
+    config,
+    { ...config, cameraId: 'camera-two', args: [...config.args, 'camera-two-fmp4'], maxDurationSeconds: 8 },
+  ],
+}, async f => {
+  const admin = await f.login();
+  const catalog = (await f.request('/api/cameras', admin)).body.cameras;
+  assert.deepEqual(catalog.filter(camera => camera.liveAvailable).map(camera => camera.id).sort(), ['camera-two', 'probe-c300']);
+  const first = await f.start(admin);
+  assert.equal(first.status, 201);
+  assert.equal((await f.start(admin, 'camera-two')).status, 409);
+  const wrongStream = first.body.streamUrl.replace('/probe-c300/', '/camera-two/');
+  const wrongStop = first.body.stopUrl.replace('/probe-c300/', '/camera-two/');
+  assert.equal((await f.request(wrongStream, admin)).status, 403);
+  assert.equal((await f.request(wrongStop, admin, { method: 'DELETE' })).status, 403);
+
+  const firstStream = await f.raw(first.body.streamUrl, admin);
+  assert.equal(firstStream.status, 200);
+  const firstReader = firstStream.body.getReader();
+  assert.match(Buffer.from((await firstReader.read()).value).toString(), /^synthetic-fmp4-bytes/);
+  assert.equal((await f.request(first.body.stopUrl, admin, { method: 'DELETE' })).status, 200);
+  await firstReader.cancel();
+
+  const second = await f.start(admin, 'camera-two');
+  assert.equal(second.status, 201);
+  assert.equal(second.body.maxDurationSeconds, 8);
+  assert.equal((await f.request(first.body.streamUrl, admin)).status, 403);
+  assert.ok(!JSON.stringify(second.body).includes('camera-two-fmp4'));
+  const secondStream = await f.raw(second.body.streamUrl, admin);
+  assert.equal(secondStream.status, 200);
+  const secondReader = secondStream.body.getReader();
+  assert.match(Buffer.from((await secondReader.read()).value).toString(), /^camera-two-fmp4/);
+  assert.equal((await f.request(second.body.stopUrl, admin, { method: 'DELETE' })).status, 200);
+  await secondReader.cancel();
+}));
+
+test('unknown or duplicate IDs disable the multi-camera configuration', async () => {
+  for (const cameraId of ['unknown-camera', 'probe-c300']) {
+    await using({ routes: config => [config, { ...config, cameraId }] }, async f => {
+      const admin = await f.login();
+      assert.equal((await f.start(admin)).status, 503);
+      assert.equal((await f.start(admin, 'camera-two')).status, 503);
+    });
+  }
 });
 
 test('live ticket is bounded, single-use and bound to exact login session', async () => using({}, async f => {

@@ -28,6 +28,9 @@
 !tools/RelayLive.java
 !tools/xiaomi_live_bridge.py
 !tools/xiaomi_cloud_probe.py
+!tools/xiaomi_shared_inventory.py
+!tools/xiaomi_cabinet_bundle.py
+!tools/xiaomi_sync.py
 !tools/requirements-diagnostic.txt
 !docs/
 !docs/YOLOX_LICENSE.txt
