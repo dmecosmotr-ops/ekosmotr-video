@@ -1,0 +1,85 @@
+.microphones-workspace { display: grid; gap: 18px; min-width: 0; }
+.microphones-workspace .section-heading { gap: 12px; }
+.microphones-workspace .section-heading > .count-label { white-space: nowrap; }
+.microphones-filters .section-heading > .icon-button { margin-left: auto; }
+.microphones-filter-form { display: grid; grid-template-columns: repeat(2, minmax(120px, 1fr)) minmax(140px, 1.2fr) minmax(160px, 1.6fr) auto; gap: 12px; align-items: end; padding: 0 24px 22px; }
+.microphones-filter-form label { display: flex; flex-direction: column; min-width: 0; gap: 7px; color: #45616c; font-size: 12px; }
+.microphones-filter-form input, .microphones-filter-form select { min-width: 0; width: 100%; min-height: 39px; padding: 8px 10px; }
+.microphones-filter-form .button { min-height: 39px; }
+.microphones-range-error { padding: 0 24px 16px; color: #a54335; font-size: 12px; }
+.microphones-demo { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; background: #fff8ea; color: #684f24; border: 1px solid #f0dfbb; border-radius: 8px; padding: 12px 16px; font-size: 12px; line-height: 1.5; }
+.microphones-metrics { gap: 14px 0; padding: 4px 16px 18px; }
+.microphones-metrics.microphones-status-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.microphones-metrics.microphones-commerce-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.microphones-metrics .metric { padding: 5px 8px 5px 14px; min-width: 0; }
+.microphones-metrics .metric-head { gap: 8px; line-height: 1.5; }
+.microphones-metrics .metric-head svg { flex-shrink: 0; }
+.microphones-metrics .metric-value { font-size: clamp(18px, 2.15vw, 29px); overflow-wrap: anywhere; }
+.microphones-products { table-layout: fixed; }
+.microphones-products thead th:first-child { width: 46%; }
+.microphones-products th, .microphones-products td { text-align: left; vertical-align: top; padding: 12px 14px; white-space: normal; overflow-wrap: anywhere; }
+.microphones-products th:first-child { padding-left: 24px; }
+.microphones-products tbody th { color: #244653; font-weight: 550; }
+.microphones-products td strong { font-weight: 600; }
+.microphones-products td .microphones-unknown { font-weight: 400; color: var(--muted); }
+.microphones-products td small { display: block; margin-top: 4px; line-height: 1.5; color: var(--muted); }
+.microphones-note { padding: 13px 24px 17px; font-size: 11px; color: var(--muted); line-height: 1.6; }
+.microphones-stations, .microphones-shift-list { padding: 0; margin: 0; list-style: none; }
+.microphones-stations li { border-top: 1px solid var(--border); }
+.microphones-station { display: grid; grid-template-columns: minmax(140px, 1fr) auto auto; gap: 12px; align-items: center; width: 100%; padding: 12px 24px; color: #365664; background: #fff; text-align: left; border: 0; }
+.microphones-station:hover { background: #f5fafb; }
+.microphones-station:focus-visible { outline-offset: -2px; }
+.microphones-station strong, .microphones-station small, .microphones-shift-address small { display: block; }
+.microphones-station small, .microphones-shift-address small, .microphones-station-status { color: var(--muted); font-size: 11px; line-height: 1.6; }
+.microphones-station > svg { color: var(--accent); }
+.microphones-shift-row { display: grid; grid-template-columns: minmax(115px, 1fr) minmax(140px, 2.2fr) minmax(130px, 1.4fr) minmax(132px, 1fr); gap: 12px; align-items: center; padding: 13px 24px; border-top: 1px solid var(--border); font-size: 12px; }
+.microphones-shift-header { background: #f5f8f9; color: var(--muted); font-weight: 600; }
+.microphones-shift-address { min-width: 0; font-weight: 550; overflow-wrap: anywhere; }
+.microphones-shift-address small { font-weight: 400; }
+.microphones-shift-badges { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.microphones-shift-row .button { justify-self: start; }
+.microphones-unavailable { color: var(--muted); }
+#microphones-shifts-heading { scroll-margin-top: 80px; }
+.modal.microphones-report { display: flex; flex-direction: column; max-width: 1050px; max-height: calc(100dvh - 32px); overflow: hidden; }
+.microphones-report .modal-header, .microphones-report-toolbar, .microphones-pdf-controls { flex-shrink: 0; }
+.microphones-pdf { display: flex; flex-direction: column; min-height: 0; }
+.microphones-report-toolbar { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 10px; padding: 10px 20px; }
+.microphones-report-toolbar .badge { margin-right: auto; }
+.microphones-pdf-controls { display: flex; gap: 12px; align-items: center; justify-content: center; padding: 8px 12px; border-top: 1px solid var(--border); color: #45616c; }
+.microphones-pdf-controls label { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+.microphones-pdf-controls select { padding: 4px 6px; min-height: 32px; }
+.microphones-pdf-scroll { position: relative; flex: 1 1 auto; min-height: 0; padding: 12px; max-height: min(67dvh, 860px); overflow: auto; overscroll-behavior: contain; background: #e9f0f3; border-top: 1px solid var(--border); scrollbar-gutter: stable; }
+.microphones-pdf-sheet { position: relative; width: 100%; max-width: 900px; margin-inline: auto; background: #fff; box-shadow: 0 2px 7px #243d4728; }
+.microphones-pdf-sheet canvas { display: block; width: 100%; height: auto; }
+.microphones-pdf-link { position: absolute; padding: 0; border: 0; background: transparent; border-radius: 1px; }
+.microphones-pdf-link:hover, .microphones-pdf-link:focus-visible { background: #008e9f26; outline: 1px solid var(--accent); outline-offset: 0; }
+.microphones-pdf-error { padding: 0 16px 12px; }
+@media (max-width: 1100px) {
+  .microphones-filter-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .microphones-filter-form .button { justify-self: start; }
+}
+@media (max-width: 850px) {
+  .microphones-shift-header { display: none; }
+  .microphones-shift-row { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 14px 16px; }
+  .microphones-shift-address { grid-column: 1 / -1; grid-row: 2; }
+  .microphones-shift-badges { grid-column: 2; grid-row: 1; justify-content: flex-end; }
+  .microphones-shift-row .button { grid-column: 1 / -1; }
+  .microphones-unavailable { display: none; }
+}
+@media (max-width: 700px) {
+  .microphones-filter-form { padding: 0 16px 16px; }
+  .microphones-filter-form .button { grid-column: 1 / -1; justify-self: stretch; }
+  .microphones-range-error { padding: 0 16px 14px; }
+  .microphones-metrics { padding: 4px 8px 15px; }
+  .microphones-metrics .metric { padding: 4px 6px 4px 9px; }
+  .microphones-metrics .metric-head svg { display: none; }
+  .microphones-products th, .microphones-products td { padding: 10px 6px; }
+  .microphones-products th:first-child { padding-left: 16px; }
+  .microphones-products thead th:first-child { width: 40%; }
+  .microphones-note { padding: 12px 16px 15px; }
+  .microphones-station { grid-template-columns: minmax(0, 1fr) auto; padding: 12px 16px; gap: 4px 8px; }
+  .microphones-station-status { grid-column: 1; }
+  .microphones-station > svg { grid-column: 2; grid-row: 1 / span 2; }
+  .microphones-report-toolbar { padding: 10px 14px; }
+  .microphones-pdf-scroll { padding: 5px; }
+}
