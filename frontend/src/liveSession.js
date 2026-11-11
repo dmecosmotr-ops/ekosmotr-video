@@ -1,4 +1,5 @@
 const SESSION_ID = /^[A-Za-z0-9_-]{16,128}$/;
+const REQUEST_TIMEOUT_MS = 10000;
 
 function endpoints(cameraId, ticket) {
   if (!cameraId || !ticket || typeof ticket.sessionId !== 'string' || !SESSION_ID.test(ticket.sessionId)) return null;
@@ -15,6 +16,7 @@ export function validLiveTicket(cameraId, ticket) {
 // even after the viewer has closed, and must never resurrect an old player.
 export function createLiveController({ cameraId, request, onState }) {
   let version = 0, disposed = false, activeTicket = null, phase = 'idle';
+  let pendingStart = null, cleanup = null;
   const publish = (next, error = '') => {
     phase = next;
     if (!disposed) onState({ phase, error, ticket: activeTicket });
@@ -22,47 +24,57 @@ export function createLiveController({ cameraId, request, onState }) {
   const release = async ticket => {
     const expected = endpoints(cameraId, ticket);
     if (!expected) return;
-    try { await request(expected.stopUrl.slice(4), { method: 'DELETE', keepalive: true }); }
+    try {
+      await request(expected.stopUrl.slice(4), { method: 'DELETE', keepalive: true,
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    }
     catch { /* Closing the HTTP video connection is the server-side fallback. */ }
+  };
+  const finish = (next, error = '') => {
+    if (cleanup) return cleanup;
+    if (!pendingStart && !activeTicket && phase === 'idle') return Promise.resolve();
+    version++;
+    const previous = activeTicket;
+    activeTicket = null;
+    publish('stopping');
+    cleanup = Promise.all([pendingStart, release(previous)]).then(() => {
+      cleanup = null;
+      publish(next, error);
+    });
+    return cleanup;
   };
   return {
     async start() {
-      if (disposed || !cameraId || ['starting', 'connecting', 'playing', 'stopping'].includes(phase)) return;
+      if (disposed || !cameraId || pendingStart || cleanup || ['starting', 'connecting', 'playing', 'stopping'].includes(phase)) return;
       const current = ++version;
       publish('starting');
-      let ticket;
-      try {
-        ticket = await request(`/cameras/${encodeURIComponent(cameraId)}/live`, { method: 'POST' });
-        if (!validLiveTicket(cameraId, ticket)) {
-          await release(ticket);
-          throw new Error('Сервис вернул некорректный адрес видеопотока. Повторите подключение.');
+      const operation = (async () => {
+        try {
+          const ticket = await request(`/cameras/${encodeURIComponent(cameraId)}/live`, {
+            method: 'POST', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          });
+          if (!validLiveTicket(cameraId, ticket)) {
+            await release(ticket);
+            throw new Error('Сервис вернул некорректный адрес видеопотока. Повторите подключение.');
+          }
+          if (disposed || current !== version) { await release(ticket); return; }
+          activeTicket = ticket;
+          publish('connecting');
+        } catch (failure) {
+          if (!disposed && current === version) publish('error', failure.message || 'Не удалось подключиться к камере. Повторите попытку.');
         }
-        if (disposed || current !== version) { await release(ticket); return; }
-        activeTicket = ticket;
-        publish('connecting');
-      } catch (failure) {
-        if (!disposed && current === version) publish('error', failure.message || 'Не удалось подключиться к камере. Повторите попытку.');
-      }
+      })();
+      pendingStart = operation;
+      try { await operation; }
+      finally { pendingStart = null; }
     },
     playing(sessionId) {
       if (!disposed && activeTicket?.sessionId === sessionId) publish('playing');
     },
-    async stop() {
-      if (phase === 'stopping') return;
-      version++;
-      const previous = activeTicket;
-      activeTicket = null;
-      publish('stopping');
-      await release(previous);
-      publish('idle');
-    },
-    async fail(message, sessionId) {
+    stop() { return finish('idle'); },
+    fail(message, sessionId) {
       if (disposed || !activeTicket || sessionId && activeTicket.sessionId !== sessionId) return;
-      version++;
-      const previous = activeTicket;
-      activeTicket = null;
-      publish('error', message);
-      await release(previous);
+      return finish('error', message);
     },
     dispose() {
       if (disposed) return;

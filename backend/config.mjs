@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { isIP } from 'node:net';
 import { hashPassword } from './security.mjs';
 import { normalizeXiaomiSyncDir } from './inventory.mjs';
+import { normalizeLiveMaxStreams } from './live.mjs';
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const validated = new WeakMap();
@@ -61,12 +62,16 @@ export function loadConfig(env = process.env) {
   if (typeof host !== 'string' || !(isIP(host) || host === 'localhost')) throw new Error('Invalid PILOT_HOST; use an IP address or localhost');
   if (mode === 'local' && !['127.0.0.1', '::1', 'localhost'].includes(host))
     throw new Error('PILOT_HOST must be loopback in local deployment');
+  const liveLimit = env.PILOT_LIVE_MAX_STREAMS === undefined ? '1' : String(env.PILOT_LIVE_MAX_STREAMS);
+  const liveMaxStreams = normalizeLiveMaxStreams(/^[1-9][0-9]{0,2}$/.test(liveLimit) ? Number(liveLimit) : NaN);
   return { host, port, deploymentConfig,
+    liveMaxStreams,
     dbPath: env.PILOT_DB || resolve(appRoot, 'private/pilot.sqlite'),
     stationFile: env.PILOT_STATIONS || resolve(appRoot, 'data/stations.json'),
     mediaFile: env.PILOT_PROBE_MEDIA || undefined,
     inventoryFile: env.PILOT_CAMERA_INVENTORY || undefined,
     analysisConfigFile: env.PILOT_ANALYSIS_CONFIG || undefined,
+    microphoneDir: env.PILOT_MICROPHONE_DIR || undefined,
     liveConfigFile: env.PILOT_LIVE_CONFIG || undefined,
     xiaomiSyncDir: normalizeXiaomiSyncDir(env.PILOT_XIAOMI_SYNC_DIR || undefined) };
 }

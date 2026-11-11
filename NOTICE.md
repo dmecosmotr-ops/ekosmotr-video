@@ -6,6 +6,8 @@ The application is an internal project prepared for its owner's review. This fil
 
 React, React DOM, lucide-react, Vite, pnpm, Python packages, Node.js, FFmpeg and the JDK retain their respective upstream licenses. Dependency source/binaries are not checked into this repository; use the lockfiles and the documented build process. Inspect the licenses of the actual distribution used by the company.
 
+The report viewer uses [Mozilla PDF.js](https://mozilla.github.io/pdf.js/) under Apache-2.0. The frontend build includes the package's full license as `pdfjs-LICENSE.txt` and preserves the upstream notices in the distributed JavaScript.
+
 The external `micam.*` transport classes from the local video experiment are **not included or downloaded by this project**. Their source, distribution rights and sender validation remain unresolved; the default container does not enable that diagnostic adapter. See `docs/VIDEO_DEPLOYMENT_REVIEW.md` before considering optional live-video setup. Do not copy private vendor classes into the repository or default image.
 
 Camera credentials, tokens, recordings, SQLite databases and local runtime files are not part of the source distribution.

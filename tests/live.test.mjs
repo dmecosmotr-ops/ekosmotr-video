@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { createApp } from '../backend/app.mjs';
 import { createLiveManager } from '../backend/live.mjs';
 import * as liveHelpers from '../backend/live.mjs';
+import { loadConfig } from '../backend/config.mjs';
 
 const accounts = { admin: ['admin@ekosmotr.local', 'Pilot-Admin-2026!'],
   regional: ['regional@ekosmotr.local', 'Pilot-Region-2026!'] };
@@ -40,6 +41,7 @@ setInterval(()=>{},1000);
     options.routes ? { cameras: options.routes(config) } : { ...config, ...options.config }));
   const app = createApp({ dbPath: path.join(dir, 'pilot.sqlite'), stationFile,
     inventoryFile: options.routes ? inventoryFile : undefined,
+    liveMaxStreams: options.liveMaxStreams,
     liveConfigFile: options.config === false ? undefined : liveConfigFile });
   const server = createServer(app);
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -56,7 +58,7 @@ setInterval(()=>{},1000);
     return { ...result.body, cookie: result.headers.get('set-cookie').split(';')[0] };
   };
   const start = (session, cameraId = 'probe-c300') => request(`/api/cameras/${cameraId}/live`, session, { method: 'POST' });
-  const stopped = async () => { for (let i = 0; i < 60; i++) { try { return await readFile(marker, 'utf8'); } catch {} await delay(30); } return null; };
+  const stopped = async (name = 'stopped.txt') => { for (let i = 0; i < 60; i++) { try { return await readFile(path.join(dir, name), 'utf8'); } catch {} await delay(30); } return null; };
   return { app, server, request, raw, login, start, stopped, liveConfigFile, async close() {
     await app.close(); server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
@@ -281,4 +283,146 @@ test('STOP grace permits a slow bridge to finish descendant cleanup beyond two s
   assert.ok(Date.now() - started >= 2300, 'bridge must survive the old two-second cutoff');
   assert.ok(Date.now() - started < 5000, 'bridge cleanup should finish before the new forced cutoff');
   await reader.cancel();
+}));
+
+const parallelRoutes = config => [config,
+  { ...config, cameraId: 'camera-two', args: [config.args[0], path.join(config.cwd, 'stopped-two.txt'), 'second-stream'] },
+  { ...config, cameraId: 'demo-1', args: [config.args[0], path.join(config.cwd, 'stopped-three.txt'), 'third-stream'] },
+];
+const openReader = async (f, ticket, session) => {
+  const response = await f.raw(ticket.streamUrl, session);
+  assert.equal(response.status, 200);
+  const reader = response.body.getReader();
+  assert.ok((await reader.read()).value.length);
+  return reader;
+};
+
+test('parallel live capacity is explicit, bounded and shared by tickets and streams', async () => {
+  assert.equal(loadConfig({}).liveMaxStreams, 1);
+  assert.equal(loadConfig({ PILOT_LIVE_MAX_STREAMS: '5' }).liveMaxStreams, 5);
+  assert.equal(loadConfig({ PILOT_LIVE_MAX_STREAMS: '10' }).liveMaxStreams, 10);
+  assert.equal(loadConfig({ PILOT_LIVE_MAX_STREAMS: '150' }).liveMaxStreams, 150);
+  for (const value of ['', '0', '151', '1.5', '-1', 'false', ' 5', '05', '1e2'])
+    assert.throws(() => loadConfig({ PILOT_LIVE_MAX_STREAMS: value }), /LIVE_MAX_STREAMS/);
+  await using({ liveMaxStreams: 2, routes: parallelRoutes }, async f => {
+    const anonymous = await f.request('/api/session');
+    assert.deepEqual(anonymous.body.liveLimits, { maxStreams: 2 });
+    const admin = await f.login();
+    assert.deepEqual(admin.liveLimits, { maxStreams: 2 });
+    const first = await f.start(admin), second = await f.start(admin, 'camera-two');
+    assert.equal(first.status, 201); assert.equal(second.status, 201);
+    const full = await f.start(admin, 'demo-1');
+    assert.equal(full.status, 409); assert.equal(full.body.code, 'LIVE_BUSY');
+    assert.equal((await f.request(first.body.stopUrl, admin, { method: 'DELETE' })).status, 200);
+    assert.equal((await f.start(admin, 'demo-1')).status, 201);
+  });
+});
+
+test('two live subprocesses play independently and stopping one leaves the other active', async () => using({
+  liveMaxStreams: 2, routes: parallelRoutes,
+}, async f => {
+  const admin = await f.login();
+  const first = await f.start(admin), second = await f.start(admin, 'camera-two');
+  assert.equal(first.status, 201); assert.equal(second.status, 201);
+  const firstReader = await openReader(f, first.body, admin), secondReader = await openReader(f, second.body, admin);
+  const duplicate = await f.start(admin, 'camera-two');
+  assert.equal(duplicate.status, 409); assert.equal(duplicate.body.code, 'LIVE_DUPLICATE');
+  assert.equal((await f.request(first.body.stopUrl, admin, { method: 'DELETE' })).status, 200);
+  assert.equal(await f.stopped(), 'stopped');
+  assert.match(Buffer.from((await secondReader.read()).value).toString(), /second-stream/);
+  assert.equal((await f.start(admin)).status, 201);
+  assert.equal((await f.request(second.body.stopUrl, admin, { method: 'DELETE' })).status, 200);
+  assert.equal(await f.stopped('stopped-two.txt'), 'stopped');
+  await firstReader.cancel(); await secondReader.cancel();
+}));
+
+test('logout stops every stream of that exact login while another login continues', async () => using({
+  liveMaxStreams: 3, routes: parallelRoutes,
+}, async f => {
+  const admin = await f.login(), another = await f.login();
+  const first = await f.start(admin), second = await f.start(admin, 'camera-two'), third = await f.start(another, 'demo-1');
+  assert.equal(first.status, 201); assert.equal(second.status, 201); assert.equal(third.status, 201);
+  const readers = [await openReader(f, first.body, admin), await openReader(f, second.body, admin), await openReader(f, third.body, another)];
+  assert.equal((await f.request(second.body.stopUrl, another, { method: 'DELETE' })).status, 403);
+  assert.equal((await f.request(first.body.streamUrl, another)).status, 403);
+  assert.equal((await f.request('/api/logout', admin, { method: 'POST' })).status, 200);
+  assert.equal(await f.stopped(), 'stopped');
+  assert.equal(await f.stopped('stopped-two.txt'), 'stopped');
+  assert.match(Buffer.from((await readers[2].read()).value).toString(), /third-stream/);
+  assert.equal((await f.request(third.body.stopUrl, another, { method: 'DELETE' })).status, 200);
+  await Promise.all(readers.map(reader => reader.cancel()));
+}));
+
+test('revocation stops all affected parallel streams while an administrator stream continues', async () => using({
+  liveMaxStreams: 3, routes: config => [config,
+    { ...config, cameraId: 'demo-1', args: [config.args[0], path.join(config.cwd, 'stopped-two.txt'), 'regional-one'] },
+    { ...config, cameraId: 'demo-2', args: [config.args[0], path.join(config.cwd, 'stopped-three.txt'), 'regional-two'] }],
+}, async f => {
+  const admin = await f.login(), regional = await f.login('regional');
+  const first = await f.start(regional, 'demo-1'), second = await f.start(regional, 'demo-2'), third = await f.start(admin);
+  assert.equal(first.status, 201); assert.equal(second.status, 201); assert.equal(third.status, 201);
+  const readers = [await openReader(f, first.body, regional), await openReader(f, second.body, regional), await openReader(f, third.body, admin)];
+  const changed = await f.request(`/api/users/${regional.user.id}`, admin, { method: 'PATCH', body: { stationIds: [], cameraIds: [] } });
+  assert.equal(changed.status, 200);
+  assert.equal(await f.stopped('stopped-two.txt'), 'stopped');
+  assert.equal(await f.stopped('stopped-three.txt'), 'stopped');
+  assert.match(Buffer.from((await readers[2].read()).value).toString(), /synthetic-fmp4-bytes/);
+  assert.equal((await f.request(third.body.stopUrl, admin, { method: 'DELETE' })).status, 200);
+  await Promise.all(readers.map(reader => reader.cancel()));
+}));
+
+test('server shutdown waits for all parallel subprocesses and releases every stream', async () => using({
+  liveMaxStreams: 2, cleanupDelayMs: 200, routes: parallelRoutes,
+}, async f => {
+  const admin = await f.login(), first = await f.start(admin), second = await f.start(admin, 'camera-two');
+  assert.equal(first.status, 201); assert.equal(second.status, 201);
+  const readers = [await openReader(f, first.body, admin), await openReader(f, second.body, admin)];
+  await liveHelpers.closePilotServer(f.app, f.server);
+  assert.equal(f.server.listening, false);
+  assert.equal(await f.stopped(), 'stopped');
+  assert.equal(await f.stopped('stopped-two.txt'), 'stopped');
+  await Promise.all(readers.map(reader => reader.cancel()));
+}));
+
+test('route replacement revokes every affected ticket without clearing unrelated sessions', async () => using({
+  routes: parallelRoutes,
+}, async f => {
+  const manager = createLiveManager({ configFile: f.liveConfigFile, cameraIds: ['probe-c300', 'camera-two', 'demo-1'], maxStreams: 3 });
+  try {
+    const configuration = JSON.parse(await readFile(f.liveConfigFile, 'utf8'));
+    const first = manager.create('probe-c300', 'owner', 'login');
+    const second = manager.create('camera-two', 'owner', 'login');
+    const third = manager.create('demo-1', 'other', 'another-login');
+    manager.replaceRoutes(configuration.cameras, new Set(['probe-c300', 'camera-two']));
+    for (const [camera, ticket] of [['probe-c300', first], ['camera-two', second]])
+      assert.throws(() => manager.stop(camera, ticket.sessionId, 'owner', 'login'), { code: 'LIVE_FORBIDDEN' });
+    assert.throws(() => manager.create('demo-1', 'other', 'another-login'), { code: 'LIVE_DUPLICATE' });
+    assert.ok(manager.create('probe-c300', 'owner', 'login').sessionId);
+    assert.ok(manager.create('camera-two', 'owner', 'login').sessionId);
+    assert.throws(() => manager.create('probe-c300', 'new-owner', 'new-login'), { code: 'LIVE_BUSY' });
+    await manager.stop('demo-1', third.sessionId, 'other', 'another-login');
+  } finally { await manager.close(); }
+}));
+
+test('invalid direct live limits fail before opening a store or starting a subprocess', async () => {
+  for (const maxStreams of [0, 151, 1.5, '5', true, null, NaN]) {
+    assert.throws(() => createLiveManager({ cameraIds: [], maxStreams }), /LIVE_MAX_STREAMS/);
+    assert.throws(() => createApp({ liveMaxStreams: maxStreams, dbPath: ':memory:' }), /LIVE_MAX_STREAMS/);
+  }
+});
+
+test('a stopping parallel subprocess keeps its capacity slot until its close event', async () => using({
+  liveMaxStreams: 2, cleanupDelayMs: 300, routes: parallelRoutes,
+}, async f => {
+  const admin = await f.login(), first = await f.start(admin), second = await f.start(admin, 'camera-two');
+  assert.equal(first.status, 201); assert.equal(second.status, 201);
+  const readers = [await openReader(f, first.body, admin), await openReader(f, second.body, admin)];
+  const stopping = f.request(first.body.stopUrl, admin, { method: 'DELETE' });
+  await delay(40);
+  const beforeClose = await f.start(admin, 'demo-1');
+  assert.equal(beforeClose.status, 409); assert.equal(beforeClose.body.code, 'LIVE_BUSY');
+  assert.equal((await stopping).status, 200);
+  assert.equal((await f.start(admin, 'demo-1')).status, 201);
+  assert.match(Buffer.from((await readers[1].read()).value).toString(), /second-stream/);
+  await Promise.all(readers.map(reader => reader.cancel()));
 }));

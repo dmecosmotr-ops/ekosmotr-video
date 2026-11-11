@@ -3,7 +3,7 @@ import { Check, Plus, Search, ShieldCheck, UsersRound } from 'lucide-react';
 import { api } from './api.js';
 import { buildUserMutation } from './userMutation.js';
 import { formatAuditDetails } from './auditDetails.js';
-import { Badge, Empty, ErrorNotice, initials, matches, Modal, roleNames, Spinner } from './components.jsx';
+import { address, Badge, Empty, ErrorNotice, initials, matches, Modal, roleNames, Spinner } from './components.jsx';
 import {
   actionNames, auditActorKey, auditPersonLabel, buildAccessTree, canGrantCamera,
   canGrantStation, describeAccess, filterAuditItems, roleDescriptions,
@@ -22,10 +22,38 @@ function AccessContents({ summary, saving = false }) {
 
 const accessCount = summary => `ПТО целиком: ${summary.fullStations.length} · Отдельных камер: ${summary.individualCameraCount}`;
 
-function UserAccess({ user, stations, cameras }) {
+function UserAccess({ user, stations, cameras, showMicrophones }) {
   const summary = describeAccess(user, stations, cameras);
-  if (summary.all) return <span>Вся сеть</span>;
-  return <details className="management-user-access"><summary><span>{accessCount(summary)}</span><span className="management-disclosure-label">Показать адреса{summary.hasUnavailable ? ' и ограничения' : ''}</span></summary><div className="management-user-access-content"><AccessContents summary={summary} /></div></details>;
+  const microphoneCount = user.microphoneStationIds?.length || 0;
+  return <>{summary.all ? <span>Вся сеть</span> : <details className="management-user-access"><summary><span>{accessCount(summary)}</span><span className="management-disclosure-label">Показать адреса{summary.hasUnavailable ? ' и ограничения' : ''}</span></summary><div className="management-user-access-content"><AccessContents summary={summary} /></div></details>}
+    {showMicrophones && <small className="management-microphone-count">Микрофоны · {microphoneCount ? `${microphoneCount} ПТО` : 'доступа нет'}</small>}
+  </>;
+}
+
+function MicrophoneAccessEditor({ stations, stationIds, assignedIds, role, disabled, onToggle, onClearUnavailable }) {
+  const [search, setSearch] = useState('');
+  const eligibleIds = new Set(stationIds);
+  const assigned = new Set(assignedIds);
+  const knownIds = new Set(stations.map(station => station.id));
+  const unavailableCount = assignedIds.filter(id => !knownIds.has(id)).length;
+  const options = stations.filter(station => (role === 'admin' || eligibleIds.has(station.id) || assigned.has(station.id)) &&
+    matches([station.city, station.address, station.region], search));
+  return <section className="access-editor management-access-editor" aria-labelledby="management-microphone-title">
+    <div className="access-title"><h3 id="management-microphone-title">Доступ к разделу «Микрофоны»</h3></div>
+    <p className="access-explanation">Назначается отдельно для каждого ПТО. Для директора и регионального руководителя сначала выберите «ПТО целиком» в разделе выше.</p>
+    <div className="access-toolbar"><label className="search-field management-access-search"><Search size={16} /><span className="sr-only">Поиск ПТО для микрофонов</span><input type="search" placeholder="Город, адрес или регион…" value={search} onChange={event => setSearch(event.target.value)} /></label></div>
+    <div className="management-access-tree management-microphone-list">
+      {options.length ? options.map(station => {
+        const selected = assigned.has(station.id);
+        const eligible = role === 'admin' || eligibleIds.has(station.id);
+        return <label className={`management-access-choice ${selected ? 'is-selected' : ''}`} key={station.id}>
+          <input type="checkbox" checked={selected} disabled={disabled} onChange={() => onToggle(station.id)} />
+          <span><strong>{station.city} · {address(station)}</strong><small>{station.region}{!eligible && ' · Доступ приостановлен до назначения ПТО целиком'}</small></span>{selected && <Check size={16} />}
+        </label>;
+      }) : <p className="access-no-match">{search.trim() ? 'Подходящие ПТО не найдены.' : 'Доступных для назначения ПТО пока нет.'}</p>}
+    </div>
+    {unavailableCount > 0 && <div className="access-explanation"><p>Назначения для ПТО, которых нет в справочнике: {unavailableCount}. Сейчас они не дают доступа.</p><button type="button" className="button button-small" disabled={disabled} onClick={onClearUnavailable}>Снять эти назначения</button></div>}
+  </section>;
 }
 
 export function UserEditor({ currentUser, target, stations = [], cameras = [], onClose, onSaved }) {
@@ -33,6 +61,7 @@ export function UserEditor({ currentUser, target, stations = [], cameras = [], o
   // Search, role selection and rendering never rewrite existing grants.
   const [stationIds, setStationIds] = useState(() => [...(target?.stationIds || [])]);
   const [cameraIds, setCameraIds] = useState(() => [...(target?.cameraIds || [])]);
+  const [microphoneStationIds, setMicrophoneStationIds] = useState(() => [...(target?.assignedMicrophoneStationIds ?? target?.microphoneStationIds ?? [])]);
   const [search, setSearch] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -40,9 +69,14 @@ export function UserEditor({ currentUser, target, stations = [], cameras = [], o
   const toggle = (setter, id) => setter(previous => previous.includes(id) ? previous.filter(value => value !== id) : [...previous, id]);
   const tree = useMemo(() => buildAccessTree(stations, cameras, search), [stations, cameras, search]);
   const summary = useMemo(() => describeAccess({ role: form.role, stationIds, cameraIds }, stations, cameras), [form.role, stationIds, cameraIds, stations, cameras]);
+  const mayManageMicrophones = currentUser.role === 'admin';
+  const existingMicGrants = target?.assignedMicrophoneStationIds ?? target?.microphoneStationIds ?? [];
+  const microphoneIdsToSave = form.role === 'admin' ? microphoneStationIds : microphoneStationIds.filter(id => stationIds.includes(id) || existingMicGrants.includes(id));
+  const knownStationIds = new Set(stations.map(station => station.id));
+  const effectiveMicrophoneCount = microphoneIdsToSave.filter(id => knownStationIds.has(id) && (form.role === 'admin' || stationIds.includes(id))).length;
   const save = async event => {
     event.preventDefault(); setError(''); setBusy(true);
-    const body = buildUserMutation(target, form, stationIds, cameraIds);
+    const body = buildUserMutation(target, form, stationIds, cameraIds, mayManageMicrophones ? microphoneIdsToSave : undefined);
     if (target && Object.keys(body).length === 0) { setBusy(false); onClose(); return; }
     try {
       await api(target ? `/users/${encodeURIComponent(target.id)}` : '/users', { method: target ? 'PATCH' : 'POST', body });
@@ -88,7 +122,8 @@ export function UserEditor({ currentUser, target, stations = [], cameras = [], o
         </div>
         {currentUser.role === 'director' && <p className="permission-caption"><ShieldCheck size={14} />Назначаются только ПТО целиком и камеры из вашего доступа.</p>}
       </section>}
-      <section className="management-access-preview" aria-labelledby="management-preview-title"><h3 id="management-preview-title">Пользователь увидит</h3>{!summary.all && <p className="management-preview-count">{accessCount(summary)}{summary.hasUnavailable ? ' в доступном списке' : ''}</p>}<AccessContents summary={summary} saving />{!form.active && <p className="management-unavailable">Учётная запись отключена: войти в сервис нельзя.</p>}</section>
+      {mayManageMicrophones && <MicrophoneAccessEditor stations={stations} stationIds={stationIds} assignedIds={microphoneStationIds} role={form.role} disabled={busy} onToggle={id => toggle(setMicrophoneStationIds, id)} onClearUnavailable={() => setMicrophoneStationIds(previous => previous.filter(id => knownStationIds.has(id)))} />}
+      <section className="management-access-preview" aria-labelledby="management-preview-title"><h3 id="management-preview-title">Пользователь увидит</h3>{!summary.all && <p className="management-preview-count">{accessCount(summary)}{summary.hasUnavailable ? ' в доступном списке' : ''}</p>}<AccessContents summary={summary} saving />{mayManageMicrophones && <p className="management-preview-count">Микрофоны · {effectiveMicrophoneCount ? `${effectiveMicrophoneCount} ПТО` : 'доступа нет'}</p>}{!form.active && <p className="management-unavailable">Учётная запись отключена: войти в сервис нельзя.</p>}</section>
       <div className="editor-footer"><ErrorNotice message={error} /><div className="editor-actions"><button type="button" className="button" onClick={onClose} disabled={busy}>Отмена</button><button type="submit" className="button button-primary" disabled={busy}>{busy ? 'Сохраняем…' : target ? 'Сохранить доступ' : 'Создать пользователя'}</button></div></div>
     </form>
   </Modal>;
@@ -115,7 +150,7 @@ export function Users({ currentUser, stations = [], cameras = [], refreshSession
     {loading ? <Spinner /> : !filtered.length ? <Empty title={search.trim() ? 'Пользователи не найдены' : 'Пользователей пока нет'} description={search.trim() ? 'Измените поисковый запрос.' : 'Создайте учётную запись и назначьте ей ПТО или камеры.'} icon={UsersRound} /> : <div className="table-scroll"><table className="users-table"><thead><tr><th>Пользователь</th><th>Роль</th><th>Доступ</th><th>Статус</th><th /></tr></thead><tbody>{filtered.map(user => <tr key={user.id}>
       <td><div className="user-cell"><span className="avatar">{initials(user.name)}</span><div><strong>{user.name}{user.id === currentUser.id && <span className="you-label">вы</span>}</strong><span>{user.email}</span></div></div></td>
       <td><Badge kind={user.role === 'admin' ? 'teal' : 'neutral'}>{roleNames[user.role]}</Badge></td>
-      <td><UserAccess user={user} stations={stations} cameras={cameras} /></td><td><Badge kind={user.active ? 'green' : 'neutral'} dot>{user.active ? 'Активен' : 'Отключён'}</Badge></td>
+      <td><UserAccess user={user} stations={stations} cameras={cameras} showMicrophones={currentUser.role === 'admin'} /></td><td><Badge kind={user.active ? 'green' : 'neutral'} dot>{user.active ? 'Активен' : 'Отключён'}</Badge></td>
       <td><button className="button button-small" onClick={() => setEditor(user)}>Настроить доступ</button></td>
     </tr>)}</tbody></table></div>}
   </section>{editor && <UserEditor currentUser={currentUser} target={editor.id ? editor : null} stations={stations} cameras={cameras} onClose={() => setEditor(null)} onSaved={saved} />}</>;

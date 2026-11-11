@@ -34,6 +34,7 @@ services:
       PILOT_PUBLIC_ORIGIN: ${PILOT_PUBLIC_ORIGIN:?Set the external HTTPS origin in .env}
       PILOT_ADMIN_EMAIL: ${PILOT_ADMIN_EMAIL:?Set the bootstrap admin email in .env}
       PILOT_ADMIN_PASSWORD_FILE: /run/secrets/bootstrap_admin_password
+      PILOT_LIVE_MAX_STREAMS: "${PILOT_LIVE_MAX_STREAMS:-1}"
     ports:
       - "127.0.0.1:${PILOT_PUBLISHED_PORT:-3210}:3210"
     volumes:

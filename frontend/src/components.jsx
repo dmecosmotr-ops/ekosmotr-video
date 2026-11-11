@@ -103,7 +103,7 @@ function DetailMetrics({ metrics }) {
   return <div className="metrics-grid detail-metrics detail-metrics-five"><Metric label="Первое появление" value={time(metrics.firstSeenAt, metrics)} icon={UserRound} /><Metric label="Открытие" value={time(metrics.openedAt, metrics)} icon={DoorOpen} /><Metric label="Закрытие" value={time(metrics.closedAt, metrics)} icon={DoorClosed} /><Metric label="Въезды в бокс" value={number(metrics.entries)} icon={ArrowDownLeft} /><Metric label="Выезды из бокса" value={number(metrics.exits)} icon={ArrowUpRight} /></div>;
 }
 
-export function StationDetail({ station, cameras, events, date, initialMode, onClose }) {
+export function StationDetail({ station, cameras, events, date, initialMode, onClose, maxStreams = 1 }) {
   const related = cameras.filter(camera => camera.stationId === station.id);
   const stationEvents = events.filter(event => event.stationId === station.id);
   const metrics = station.metrics || {};
@@ -118,7 +118,7 @@ export function StationDetail({ station, cameras, events, date, initialMode, onC
   return <Modal title={stationTitle(station)} subtitle="Пункт технического осмотра" onClose={onClose} wide className="detail-modal">
     <div className="station-detail-body">
       <DetailTabs section={section} mode={mode} onEvents={() => setSection('events')} onVideo={next => video(next)} />
-      {section === 'video' ? <VideoPanel cameras={related} cameraId={cameraId} onCameraChange={chooseCamera} mode={mode} onModeChange={next => video(next)} date={date} eventRequest={eventRequest} showModeTabs={false} /> : <div className="detail-summary">
+      {section === 'video' ? <VideoPanel cameras={related} cameraId={cameraId} onCameraChange={chooseCamera} mode={mode} onModeChange={next => video(next)} date={date} eventRequest={eventRequest} showModeTabs={false} maxStreams={maxStreams} /> : <div className="detail-summary">
       <div className="detail-meta"><span>{station.region}</span><span>Региональный руководитель: {station.manager || 'Не указан'}</span><SourceLabel metrics={metrics} /></div>
       <div className="detail-date">{readableDate(date)}</div>
       <DetailMetrics metrics={metrics} />
@@ -133,7 +133,7 @@ export function StationDetail({ station, cameras, events, date, initialMode, onC
   </Modal>;
 }
 
-export function CameraDetail({ camera, station, events, date = '2026-10-30', initialMode, initialEventRequest = null, onClose }) {
+export function CameraDetail({ camera, station, events, date = '2026-10-30', initialMode, initialEventRequest = null, onClose, maxStreams = 1 }) {
   const metrics = camera.metrics || {};
   const initial = cameraInitialView(camera, initialMode);
   const [section, setSection] = React.useState(initial.section);
@@ -146,7 +146,7 @@ export function CameraDetail({ camera, station, events, date = '2026-10-30', ini
   return <Modal title={stationTitle(station)} subtitle={subtitle} onClose={onClose} wide className="detail-modal">
     <div className="station-detail-body">
       <DetailTabs section={section} mode={mode} onEvents={() => setSection('events')} onVideo={video} />
-      {section === 'video' ? <VideoPanel cameras={[camera]} cameraId={camera.id} onCameraChange={() => {}} mode={mode} onModeChange={video} date={date} eventRequest={eventRequest} showModeTabs={false} /> : <div className="detail-summary">
+      {section === 'video' ? <VideoPanel cameras={[camera]} cameraId={camera.id} onCameraChange={() => {}} mode={mode} onModeChange={video} date={date} eventRequest={eventRequest} showModeTabs={false} maxStreams={maxStreams} /> : <div className="detail-summary">
         <div className="detail-meta"><span>{camera.model}</span><CameraStatus camera={camera} /><SourceLabel metrics={metrics} /></div>
         <div className="detail-date">{readableDate(date)}</div>
         {camera.view === 'gate_line' && <DetailMetrics metrics={metrics} />}

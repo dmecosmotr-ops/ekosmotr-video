@@ -58,6 +58,8 @@ docker compose exec -T camera-pilot node deploy/healthcheck.mjs
 
 ## Домен и HTTPS
 
+`PILOT_LIVE_MAX_STREAMS` (1–150, по умолчанию 1) передаётся через `.env` и Compose. Для большего числа эфиров проверьте выделенные CPU и память под нагрузкой, а также HTTP/2 на прокси со стороны браузера. [Настройка мониторинга](MONITORING.md).
+
 Настроить существующий reverse proxy компании на `http://127.0.0.1:3210`. Он завершает HTTPS и сохраняет исходный Host. Если выбран другой опубликованный порт, изменить upstream. Минимальный фрагмент для уже настроенного HTTPS `server` в Nginx:
 
 ```nginx
