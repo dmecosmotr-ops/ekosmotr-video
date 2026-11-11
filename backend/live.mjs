@@ -3,6 +3,8 @@ import { isAbsolute } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 
+const MAX_LIVE_ROUTES = 150;
+
 export class LiveError extends Error {
   constructor(status, message, code) { super(message); this.status = status; this.code = code; }
 }
@@ -36,7 +38,7 @@ export function loadLiveConfiguration(file, cameraIds) {
 }
 
 export function parseLiveRoutes(input, cameraIds, { allowEmpty = false } = {}) {
-  if (!Array.isArray(input?.cameras) || Object.keys(input).length !== 1 || input.cameras.length > 150
+  if (!Array.isArray(input?.cameras) || Object.keys(input).length !== 1 || input.cameras.length > MAX_LIVE_ROUTES
     || (!allowEmpty && !input.cameras.length)) return null;
   const routes = new Map();
   try {
@@ -56,18 +58,26 @@ const jsonError = (response, status, code, message) => {
   response.end(JSON.stringify({ error: message, code }));
 };
 
-/** One bounded live subprocess. Configuration is local-only; HTTP cannot choose commands or sources. */
+export function normalizeLiveMaxStreams(value = 1) {
+  if (!Number.isInteger(value) || value < 1 || value > MAX_LIVE_ROUTES)
+    throw new Error(`Invalid PILOT_LIVE_MAX_STREAMS: expected an integer from 1 to ${MAX_LIVE_ROUTES}`);
+  return value;
+}
+
+/** Bounded live subprocesses. Configuration is local-only; HTTP cannot choose commands or sources. */
 export function createLiveManager({ configFile, cameraIds, onEvent = () => {}, ticketTtlMs = 20000,
-  rightsIntervalMs = 1000 } = {}) {
+  rightsIntervalMs = 1000, maxStreams = 1 } = {}) {
+  maxStreams = normalizeLiveMaxStreams(maxStreams);
   const input = loadLiveConfiguration(configFile, new Set(cameraIds));
   let routes = new Map((input?.cameras ?? (input ? [input] : [])).map(route => [route.cameraId, route]));
-  let active = null, closed = false, closePromise = null;
+  const sessions = new Map();
+  let closed = false, closePromise = null;
   const notify = (action, item, reason) => { try { onEvent(action, item.ownerId, item.cameraId,
     action === 'stop' ? (STOP_REASONS.has(reason) ? reason : 'stopped') : undefined); } catch {} };
   const release = item => {
     for (const timer of item.timers) { clearTimeout(timer); clearInterval(timer); }
     item.timers.clear();
-    if (active === item) active = null;
+    if (sessions.get(item.id) === item) sessions.delete(item.id);
   };
   function stop(item, reason = 'stopped') {
     if (!item || item.state === 'stopping') return;
@@ -89,8 +99,8 @@ export function createLiveManager({ configFile, cameraIds, onEvent = () => {}, t
     killer.unref(); item.timers.add(killer);
   }
   function own(cameraId, sessionId, ownerId, loginHash) {
-    const item = active;
-    if (!item || item.cameraId !== cameraId || item.id !== sessionId
+    const item = sessions.get(sessionId);
+    if (!item || item.cameraId !== cameraId
       || item.ownerId !== ownerId || item.loginHash !== loginHash) deny();
     return item;
   }
@@ -104,18 +114,23 @@ export function createLiveManager({ configFile, cameraIds, onEvent = () => {}, t
     available,
     replaceRoutes(next, revoked) {
       routes = new Map(next.map(route => [route.cameraId, route]));
-      if (!active) return;
-      const route = routes.get(active.cameraId);
-      if (!route || revoked.has(active.cameraId)) stop(active, 'access_revoked');
-      else if (active.state === 'ticket') active.config = route;
+      for (const item of [...sessions.values()]) {
+        const route = routes.get(item.cameraId);
+        if (!route || revoked.has(item.cameraId)) stop(item, 'access_revoked');
+        else if (item.state === 'ticket') item.config = route;
+      }
     },
     create(cameraId, ownerId, loginHash) {
       const config = routes.get(cameraId);
       if (closed || !config) throw new LiveError(503, 'Онлайн этой камеры пока не подключён', 'LIVE_NOT_CONFIGURED');
-      if (active) throw new LiveError(409, 'В пилоте уже открыт один просмотр. Остановите его и повторите подключение.', 'LIVE_BUSY');
+      if ([...sessions.values()].some(item => item.cameraId === cameraId && item.loginHash === loginHash))
+        throw new LiveError(409, 'Эта камера уже открыта в вашей сессии. Остановите её перед повторным подключением.', 'LIVE_DUPLICATE');
+      if (sessions.size >= maxStreams)
+        throw new LiveError(409, `Достигнут лимит одновременных просмотров (${maxStreams}). Остановите одну из камер и повторите подключение.`, 'LIVE_BUSY');
       const id = randomBytes(24).toString('base64url');
-      const item = active = { id, cameraId, ownerId, loginHash, config, state: 'ticket', child: null,
+      const item = { id, cameraId, ownerId, loginHash, config, state: 'ticket', child: null,
         timers: new Set(), response: null, startedAt: Date.now(), lastByteAt: 0 };
+      sessions.set(id, item);
       const ttl = setTimeout(() => stop(item, 'ticket_expired'), Math.min(20000, ticketTtlMs));
       ttl.unref(); item.timers.add(ttl); notify('start', item);
       return { sessionId: id, streamUrl: `/api/cameras/${encodeURIComponent(cameraId)}/live/${id}/stream`,
@@ -166,13 +181,15 @@ export function createLiveManager({ configFile, cameraIds, onEvent = () => {}, t
       stop(item);
       return completion;
     },
-    stopLogin(loginHash) { if (active?.loginHash === loginHash) stop(active, 'logout'); },
+    stopLogin(loginHash) {
+      for (const item of [...sessions.values()]) if (item.loginHash === loginHash) stop(item, 'logout');
+    },
     close() {
       if (closed) return closePromise;
       closed = true;
-      const item = active;
-      closePromise = waitForBridge(item);
-      stop(item, 'server_closed');
+      const active = [...sessions.values()];
+      closePromise = Promise.all(active.map(waitForBridge)).then(() => undefined);
+      for (const item of active) stop(item, 'server_closed');
       return closePromise;
     },
   };

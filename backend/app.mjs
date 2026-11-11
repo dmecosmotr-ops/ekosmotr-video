@@ -7,7 +7,7 @@ import { normalizeDeploymentConfig } from './config.mjs';
 import { makeDemo, DEMO_DATE, aggregateMetrics, noneMetrics, buildVisits } from './demo.mjs';
 import { hasProbeMedia, validDate, timeSeconds, playbackState, archiveSearch } from './playback.mjs';
 import { importInventory, normalizeXiaomiSyncDir, startXiaomiRefresh } from './inventory.mjs';
-import { createLiveManager, LiveError } from './live.mjs';
+import { createLiveManager, LiveError, normalizeLiveMaxStreams } from './live.mjs';
 import { loadAnalysisConfig, confirmedCameras, readAnalysis, analysisEvents, analysisMetrics } from './analysis.mjs';
 import { analysisPlayback, searchAnalysisArchive, exactAnalysisRecording, openAnalysisMedia, mediaRange } from './analysisArchive.mjs';
 import { microphoneSummary, openMicrophoneReport, readMicrophoneCatalog, validateMicrophoneDirectory } from './microphones.mjs';
@@ -56,7 +56,8 @@ async function bodyJSON(request) {
 
 export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
   stationFile = resolve(appRoot, 'data/stations.json'), mediaFile, inventoryFile, liveConfigFile, analysisConfigFile,
-  microphoneDir, xiaomiSyncDir, staticDir = resolve(appRoot, 'frontend/dist'), deploymentConfig } = {}) {
+  microphoneDir, xiaomiSyncDir, staticDir = resolve(appRoot, 'frontend/dist'), deploymentConfig, liveMaxStreams = 1 } = {}) {
+  liveMaxStreams = normalizeLiveMaxStreams(liveMaxStreams);
   deploymentConfig = normalizeDeploymentConfig(deploymentConfig);
   microphoneDir = validateMicrophoneDirectory(microphoneDir, staticDir);
   xiaomiSyncDir = normalizeXiaomiSyncDir(xiaomiSyncDir);
@@ -96,7 +97,7 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
   }
   let closed = false, closePromise = null;
   const archiveStreams = new Set();
-  const live = createLiveManager({ configFile: liveConfigFile, cameraIds: cameraMap.keys(),
+  const live = createLiveManager({ configFile: liveConfigFile, cameraIds: cameraMap.keys(), maxStreams: liveMaxStreams,
     onEvent: (action, ownerId, cameraId, reason) => {
       const row = getUserRow(ownerId);
       audit(row && publicUser(row), action === 'start' ? 'Запрошен онлайн-просмотр' : 'Остановлен онлайн-просмотр',
@@ -119,6 +120,7 @@ export function createApp({ dbPath = resolve(appRoot, 'private/pilot.sqlite'),
   const canManage = (actor, row) => actor.role === 'admin' || (actor.role === 'director'
     && row.role === 'regional' && row.created_by === actor.id && row.delegated_by === actor.id);
   const state = session => ({ user: session?.user || null, csrfToken: session?.csrf || null, ...modes,
+    liveLimits: { maxStreams: liveMaxStreams },
     demoLoginAvailable: deploymentConfig.demoLoginAvailable, ...(xiaomiRefresh && { xiaomiSyncEnabled: true }) });
 
   function effectiveUser(row) {

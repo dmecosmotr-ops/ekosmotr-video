@@ -30,7 +30,7 @@ function ArchivePlayer({ record }) {
   </div>;
 }
 
-export default function VideoPanel({ cameras, cameraId, onCameraChange, mode, onModeChange, date, eventRequest = null, showModeTabs = true }) {
+export default function VideoPanel({ cameras, cameraId, onCameraChange, mode, onModeChange, date, eventRequest = null, showModeTabs = true, maxStreams = 1 }) {
   const [loadedPlayback, setLoadedPlayback] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -115,7 +115,7 @@ export default function VideoPanel({ cameras, cameraId, onCameraChange, mode, on
       {loading && <div className="playback-loading" role="status"><LoaderCircle size={18} className="spin" />Проверяем доступные источники…</div>}
       {error && <div className="error-notice" role="alert">{error}</div>}
       {mode === 'online' ? !loading && (playback?.live?.status === 'available'
-        ? <LivePlayer key={cameraId} cameraId={cameraId} cameraName={camera.name} message="Подключение камеры проверится после нажатия «Начать просмотр»." />
+        ? <LivePlayer key={cameraId} cameraId={cameraId} cameraName={camera.name} maxStreams={maxStreams} message="Подключение камеры проверится после нажатия «Начать просмотр»." />
         : playback && <PlaybackEmpty title="Онлайн-видео пока не подключено" message="Для этой камеры просмотр ещё не настроен." />) : <>
         {eventMoment && <div className="archive-clock-note"><Info size={14} />Открыт момент события: {observedClock(eventMoment.time, eventMoment.timing, true)}. Поля ниже — для нового поиска.</div>}
         {canSearchArchive && <form className="archive-search" onSubmit={event => { event.preventDefault(); searchArchive(form); }}>
